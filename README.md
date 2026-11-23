@@ -1,78 +1,119 @@
-# 作业看台 (Job Desk)
+# Job Desk
 
-一个用来盯着 Linux / Slurm 集群作业的 Windows 桌面小工具：悬浮球、便利贴、命令行，支持同时管理多个账号。
+**English** · [简体中文](README.zh-CN.md)
 
-<!-- 截图可以放在 docs/ 目录，然后在这里引用 -->
+[![Latest release](https://img.shields.io/github/v/release/yrzhu-ai/job-desk?sort=semver)](https://github.com/yrzhu-ai/job-desk/releases/latest)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-lightgrey.svg)](#requirements)
 
-## 功能
+A small Windows desktop app for watching **Slurm jobs on Linux clusters**, with a
+floating ball, an SSH terminal and a sticky-note planner. It manages any number of
+accounts — no per-cluster configuration needed.
 
-- **多账号**：任意 Linux 账号都能加（主机 / 端口 / 用户名 / 密码）。自动探测 Slurm 路径（`/opt/slurm/bin`、`/sched/slurm/bin`、`module load slurm` 等），找不到作业系统时自动改看 `top`。
-- **作业看板**：运行中 / 排队 / 已完成 / 报错 四栏；排队任务显示已等待时长；可按账号分标签页。
-- **悬浮球**：中间是「进行中 / 未完成」，下面是「已完成」，悬停查看分账号明细。
-- **命令行**：内置 SSH 终端，鼠标选中即复制、右键粘贴，支持 `bash` / `zsh`。
-- **便利贴 / 管家**：今日、本周、本月、学期视图；可改期、设重要度、记录进展、加子任务。
-- **皮肤**：4 套深色 + 4 套浅色。
-- **中英文双语**：右上角「语言 / Language」可切换「跟随系统 / 中文 / English」。
-- **自动更新**：每 24 小时检查一次 GitHub Releases，有新版本会弹窗显示这一版改了什么。
+<!-- screenshots: put images in docs/ and reference them here -->
 
-## 下载
+## Features
 
-到 [Releases](https://github.com/yrzhu-ai/job-desk/releases/latest) 下载 `jobdesk.exe`（或对应版本的 exe），双击运行，无需安装 Python。
+- **Any Linux account.** Add host / port / user / password. Slurm is discovered
+  automatically (`/opt/slurm/bin`, `/sched/slurm/bin`, `module load slurm`, …);
+  if a machine has no scheduler the app falls back to showing `top`.
+- **Job board.** Running / Queued / Done / Failed columns, one tab per account,
+  queue wait time for pending jobs, optional full table view.
+- **Floating ball.** Big number = running / unfinished, small line = finished.
+  Hover for a per-account breakdown.
+- **Built-in terminal.** SSH shell with select-to-copy and right-click paste
+  (MobaXterm-style), `bash` and `zsh` friendly.
+- **Planner.** Sticky notes with today / this week / this month / this term views,
+  due dates, importance, progress logs and subtasks.
+- **Themes.** Four dark skins and four light skins.
+- **Bilingual UI.** System / 中文 / English, switchable at runtime.
+- **Auto-update.** Checks GitHub Releases once every 24 hours and shows the release
+  notes before updating.
 
-## 从源码运行
+## Requirements
+
+- Windows 10 or 11 (x64)
+- Network access to the cluster over SSH
+- The cluster needs `squeue` / `sacct` for job data; without them the app shows `top`
+
+## Download
+
+Grab the latest `jobdesk.exe` from **[Releases](https://github.com/yrzhu-ai/job-desk/releases/latest)**
+and run it. There is nothing to install and Python is not required.
+
+> Windows SmartScreen may warn about an unsigned binary. Click *More info → Run anyway*.
+> The SHA-256 of every build is attached to its release.
+
+## Usage
+
+1. **Accounts** → add host, port, username and password. The password is encrypted
+   with the Windows DPAPI key of the current user and never leaves the machine.
+2. **Jobs** → the board fills in automatically; press *Refresh* for an immediate update.
+3. **Ball** → collapses the window to a small always-on-top circle.
+4. **Terminal** → open a shell for an account; select text to copy, right-click to paste.
+5. **Planner** → write a sentence and let DeepSeek turn it into tasks (optional; needs an API key).
+
+## Auto-update
+
+`update_url.txt` points at this repository. On each check the app reads the **latest
+release**:
+
+| Release field | Used for |
+|---|---|
+| tag (e.g. `v1.0.17`) | version comparison |
+| release notes | the "what changed" text in the dialog |
+| `.exe` asset | the download (verified by size and SHA-256) |
+
+You can also point it at your own JSON manifest — see the comments inside `update_url.txt`.
+
+## Build from source
 
 ```bash
 pip install -r requirements.txt
-python app.py
+python app.py            # run
 ```
 
-## 打包
+Package a single executable:
 
 ```bash
 python -m PyInstaller --noconfirm --windowed --onefile --name 作业看台 ^
   --icon quill.ico --add-data "quill.ico;." --add-data "update_url.txt;." app.py
 ```
 
-或者直接双击 `打包成exe.bat`。
+or just double-click `打包成exe.bat`.
 
-## 自动更新怎么工作
-
-`update_url.txt` 里写的是本仓库地址。程序会读取 **最新一个 Release**：
-
-| Release 里的东西 | 程序怎么用 |
-|---|---|
-| tag（如 `v1.0.15`） | 作为版本号，与本地版本比较 |
-| Release 描述 | 弹窗里显示的「这一版改了什么」 |
-| `.exe` 附件 | 下载并校验后替换自身 |
-
-> 注意：用 `gh` 上传中文文件名会被改名（`作业看台.exe` → `default.exe`），
-> 所以建议附件用英文名，例如 `jobdesk.exe`。程序会挑 Release 里第一个 `.exe`。
-
-## 发布新版本
+## Releasing
 
 ```bash
-# 1. 改 app.py 里的 VERSION
-# 2. 打包
-python -m PyInstaller ... app.py
-# 3. 发 Release（附件用英文名）
-gh release create v1.0.15 dist/jobdesk.exe --title "作业看台 1.0.15" --notes "这一版改了什么"
+# 1. bump VERSION in app.py and commit
+# 2. tag and push
+git tag v1.0.17
+git push origin main --tags
 ```
 
-已经装了旧版本的用户，最多 6 小时后会看到更新提示（也可以点右上角「检查更新」立刻检查）。
+GitHub Actions then builds the exe, computes its SHA-256 and publishes a release
+(see [`.github/workflows/release.yml`](.github/workflows/release.yml)).
+Running the workflow manually only uploads a build artifact.
 
-## 目录
+## Project layout
 
-| 文件 | 作用 |
+| File | Purpose |
 |---|---|
-| `app.py` | 主窗口、悬浮球、更新弹窗 |
-| `jobs.py` | SSH 查询 Slurm / top，解析作业 |
-| `plans.py` | 便利贴 / 管家 |
-| `shellwin.py` | 内置命令行（终端模拟） |
-| `store.py` | 账号、偏好、密码（DPAPI 加密） |
-| `theme.py` | 皮肤与配色 |
-| `updater.py` | 检查 / 下载 / 替换自身 |
-| `winsecret.py` | Windows DPAPI 封装 |
+| `app.py` | main window, floating ball, update dialog |
+| `jobs.py` | SSH queries to Slurm/`top`, output parsing |
+| `plans.py` | sticky-note planner |
+| `shellwin.py` | built-in terminal emulator |
+| `store.py` | accounts, preferences, DPAPI-encrypted secrets |
+| `theme.py` | skins and palettes |
+| `i18n.py` | Chinese ↔ English UI |
+| `updater.py` | check / download / self-replace |
+| `winsecret.py` | Windows DPAPI wrapper |
 
-## 许可
+## Contributing
 
-暂未指定 License。
+Issues and pull requests are welcome. Please keep changes small and describe the
+user-visible effect; screenshots help.
+
+## License
+
+[MIT](LICENSE) © 2026 yrzhu-ai
