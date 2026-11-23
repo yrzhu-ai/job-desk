@@ -1,0 +1,18 @@
+https://github.com/yrzhu-ai/job-desk
+
+# 自动更新地址：# 开头的行会被忽略，程序只读第一行有效内容。
+#
+# 这里填的是 GitHub 仓库地址。程序会去读这个仓库的 Releases：
+#   - tag 作为版本号（例如 v1.0.14）
+#   - Release 描述作为“这一版改了什么”
+#   - Release 附件里的“作业看台.exe”作为下载文件
+#
+# 发布新版本：
+#   gh release create v1.0.15 "dist/作业看台.exe" --title "作业看台 1.0.15" --notes "改了什么"
+# 或者在 GitHub 网页上 Releases -> Draft a new release，把 exe 拖进去。
+#
+# 也可以改成一份 json 清单（二选一）：
+#   https://example.com/update.json
+#   {"version":"1.0.15","url":"https://.../作业看台.exe","sha256":"可选的64位十六进制","notes":"改了什么"}
+#
+# 这份文件也可以放在 exe 同目录，程序会优先使用 exe 旁边的那一份。
