@@ -12,6 +12,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 from ask import AskError, organize_plans
+import i18n
 from theme import is_light, palette, readable_on
 from winsecret import SecretError
 
@@ -304,6 +305,7 @@ def tell(owner, title: str, text: str) -> None:
     ttk.Button(win, text="确定", command=win.destroy).pack(pady=(0, 14))
     win.update_idletasks()
     center_on(win, owner, max(360, win.winfo_reqwidth() + 8), max(120, win.winfo_reqheight() + 8))
+    i18n.apply(win)
     win.deiconify()
     win.grab_set()
     win.focus_set()

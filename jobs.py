@@ -15,6 +15,8 @@ from pathlib import Path
 
 import paramiko
 
+import i18n
+
 logging.getLogger("paramiko").setLevel(logging.WARNING)
 
 _KEYS_LOCK = threading.Lock()
@@ -60,6 +62,29 @@ STATE_ZH = {
     "SIGNALING": "发送信号",
     "STAGE_OUT": "写出中",
     "RESIZING": "调整中",
+}
+STATE_EN = {
+    "RUNNING": "Running",
+    "PENDING": "Queued",
+    "COMPLETED": "Done",
+    "FAILED": "Failed",
+    "CANCELLED": "Cancelled",
+    "TIMEOUT": "Timeout",
+    "NODE_FAIL": "Node fail",
+    "OUT_OF_MEMORY": "Out of memory",
+    "PREEMPTED": "Preempted",
+    "SUSPENDED": "Suspended",
+    "COMPLETING": "Completing",
+    "CONFIGURING": "Configuring",
+    "REQUEUED": "Requeued",
+    "DEADLINE": "Deadline",
+    "BOOT_FAIL": "Boot fail",
+    "REVOKED": "Revoked",
+    "SPECIAL_EXIT": "Special exit",
+    "STOPPED": "Stopped",
+    "SIGNALING": "Signaling",
+    "STAGE_OUT": "Staging out",
+    "RESIZING": "Resizing",
 }
 RUNNING_STATES = {"RUNNING", "COMPLETING", "CONFIGURING", "SIGNALING", "STAGE_OUT", "RESIZING"}
 WAITING_STATES = {"PENDING", "SUSPENDED", "REQUEUED", "STOPPED"}
@@ -226,9 +251,10 @@ def base_state(state: str) -> str:
 def state_text(state: str) -> str:
     raw = (state or "").strip()
     if not raw:
-        return "未知"
+        return i18n.tr("未知")
     base = base_state(raw)
-    zh = STATE_ZH.get(base)
+    table = STATE_EN if i18n.language.english else STATE_ZH
+    zh = table.get(base)
     if not zh:
         return raw
     rest = raw[len(base):].strip(" +") if raw.startswith(base) else ""
@@ -308,15 +334,20 @@ def duration_text(seconds: int) -> str:
     """Short duration for the queue wait."""
     if seconds is None or seconds < 0:
         return ""
+    english = i18n.language.english
     if seconds < 60:
-        return f"{seconds}秒"
+        return f"{seconds}s" if english else f"{seconds}秒"
     minutes = seconds // 60
     if minutes < 60:
-        return f"{minutes}分"
+        return f"{minutes}m" if english else f"{minutes}分"
     hours, minutes = divmod(minutes, 60)
     if hours < 24:
+        if english:
+            return f"{hours}h{minutes}m" if minutes else f"{hours}h"
         return f"{hours}小时{minutes}分" if minutes else f"{hours}小时"
     days, hours = divmod(hours, 24)
+    if english:
+        return f"{days}d{hours}h" if hours else f"{days}d"
     return f"{days}天{hours}小时" if hours else f"{days}天"
 
 

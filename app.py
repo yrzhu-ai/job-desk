@@ -40,10 +40,11 @@ from jobs import (
 from store import Store, _check_login, check_user, data_dir, last_user_name, legacy_waiting, register_user, user_folder
 from theme import SKINS, TEXT_CHOICES, TEXT_SIZES, apply_text, palette, restyle, sync_modules, text_look
 from updater import UpdateError, download_release, launch_swap, look_for_update, save_update_url, update_url
+import i18n
 from winsecret import SecretError
 
 REFRESH_SECONDS = 10 * 60
-UPDATE_CHECK_HOURS = 6
+UPDATE_CHECK_HOURS = 24
 BG = "#10141c"
 PANEL = "#1a2130"
 CARD = "#222b3c"
@@ -55,7 +56,7 @@ WARN = "#f2b544"
 BAD = "#ff6d7d"
 LINE = "#313c52"
 HEADING = "#2a384c"
-VERSION = "1.0.14"
+VERSION = "1.0.15"
 FONT = ("Microsoft YaHei UI", 10)
 FONT_SMALL = ("Microsoft YaHei UI", 9)
 FONT_TITLE = ("Microsoft YaHei UI", 18, "bold")
@@ -962,6 +963,8 @@ class App(tk.Tk):
         self.restart_login = False
         palette.use(self.store.skin())
         sync_modules()
+        i18n.language.code = i18n.resolve(self.store.language())
+        i18n.install()
         self.alive = True
         self.busy = False
         self.pending_again = False
@@ -1006,6 +1009,7 @@ class App(tk.Tk):
         self.minsize(1040, 640)
         self._style()
         self._build()
+        i18n.apply(self)
         self.ball = FloatBall(self)
         try:
             self.geometry(self.store.data.get("geometry") or "1180x720")
@@ -1031,7 +1035,7 @@ class App(tk.Tk):
 
     def _window_title(self, extra: str = "") -> str:
         who = f"  {self.user_name}" if self.user_name else ""
-        base = f"作业看台 {VERSION}{who}"
+        base = f"{i18n.tr('作业看台')} {VERSION}{who}"
         return f"{base} - {extra}" if extra else base
 
     def _on_callback_error(self, exc_type, exc, tb) -> None:
@@ -1167,6 +1171,24 @@ class App(tk.Tk):
         if hasattr(self, "refresh_btn"):
             self._style()
 
+    def open_language_menu(self) -> None:
+        menu = tk.Menu(self, tearoff=0)
+        current = self.store.language()
+        for key, label in i18n.LANGUAGES:
+            mark = "" if current == key else ""
+            menu.add_command(label=(label + mark), command=lambda name=key: self.apply_language(name))
+        try:
+            menu.tk_popup(self.winfo_pointerx(), self.winfo_pointery())
+        finally:
+            menu.grab_release()
+
+    def apply_language(self, choice: str) -> None:
+        self.store.set_language(choice)
+        i18n.language.code = i18n.resolve(choice)
+        i18n.apply(self)
+        self.title(self._window_title())
+        self.redraw()
+
     def open_skin_menu(self) -> None:
         menu = tk.Menu(self, tearoff=0, bg=PANEL, fg=FG, activebackground=ACCENT, activeforeground=palette.on_accent, font=FONT)
         for key, spec in SKINS.items():
@@ -1235,7 +1257,7 @@ class App(tk.Tk):
         header = ttk.Frame(outer, style="App.TFrame")
         header.grid(row=0, column=0, sticky="ew")
         who = f"    {self.user_name}" if self.user_name else ""
-        ttk.Label(header, text=f"作业看台  {VERSION}{who}", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(header, text=f"{i18n.tr('作业看台')}  {VERSION}{who}", style="Title.TLabel").pack(anchor="w")
         ttk.Label(header, text="Linux 作业，和自己要做的事。只查询，不提交也不取消。", style="Muted.TLabel").pack(anchor="w", pady=(2, 0))
         nav = ttk.Frame(header, style="App.TFrame")
         nav.pack(fill="x", pady=(10, 0))
@@ -1257,6 +1279,7 @@ class App(tk.Tk):
         tk.Checkbutton(nav, text="隐藏报错", variable=self.hide_bad, command=self.toggle_hide, bg=BG, fg=FG, selectcolor=PANEL, activebackground=BG, activeforeground=FG, font=FONT_SMALL).pack(side="left", padx=(4, 0))
         ttk.Button(nav, text="退出登录", style="Ghost.TButton", command=self.logout).pack(side="right")
         ttk.Button(nav, text="皮肤", style="Ghost.TButton", command=self.open_skin_menu).pack(side="right", padx=(0, 6))
+        ttk.Button(nav, text="语言", style="Ghost.TButton", command=self.open_language_menu).pack(side="right", padx=(0, 6))
         ttk.Button(nav, text="文字", style="Ghost.TButton", command=self.open_text_style).pack(side="right", padx=(0, 6))
         self.update_btn = ttk.Button(nav, text="检查更新", style="Ghost.TButton", command=self.check_updates)
         self.update_btn.pack(side="right", padx=(0, 6))
@@ -2171,7 +2194,7 @@ class App(tk.Tk):
         for index, (tag, text) in enumerate(lines):
             if index:
                 self.status.insert("end", "\n")
-            self.status.insert("end", text, tag)
+            self.status.insert("end", i18n.tr(text), tag)
         self.status.configure(state="disabled")
 
     def tab_name(self, account_id: str) -> str:

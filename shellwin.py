@@ -6,6 +6,7 @@ import codecs
 import socket
 import threading
 import tkinter as tk
+import i18n
 from jobs import Job, cd_command, connect_account, explain_connect_error, lookup_workdir
 from plans import center_on
 
@@ -453,16 +454,27 @@ class ShellWindow(tk.Toplevel):
             menu.grab_release()
 
     def _banner(self, who: str) -> str:
-        where = self.job.workdir or "家目录"
-        lines = [f"正在登录 {who}"]
-        if (self.job.job_id or "").strip():
-            lines.append(f"作业 {self.job.job_id}  {self.job.name or '未命名'}")
+        where = self.job.workdir or i18n.tr("家目录")
+        if i18n.language.english:
+            lines = [f"Connecting to {who}"]
+            if (self.job.job_id or "").strip():
+                lines.append(f"Job {self.job.job_id}  {self.job.name or 'unnamed'}")
+            else:
+                lines.append("Opened from the account; starting in the home folder.")
+            lines.append(f"Dir {where}")
+            lines.append("This is that account's shell. What you type runs on the machine.")
+            lines.append("Ctrl + mouse wheel zooms. The Colors button changes the background.")
+            lines.append("Selecting text copies it; right-click or Shift+Insert pastes.")
         else:
-            lines.append("从账号进入，停在家目录。")
-        lines.append(f"目录 {where}")
-        lines.append("这是该账号的命令行。你输入的命令会在这台机器上执行。")
-        lines.append("按住 Ctrl，滚动鼠标滚轮可以放大或缩小字体。左下角「配色」可以换背景。")
-        lines.append("鼠标选中文字会自动复制，右键或 Shift+Insert 粘贴。")
+            lines = [f"正在登录 {who}"]
+            if (self.job.job_id or "").strip():
+                lines.append(f"作业 {self.job.job_id}  {self.job.name or '未命名'}")
+            else:
+                lines.append("从账号进入，停在家目录。")
+            lines.append(f"目录 {where}")
+            lines.append("这是该账号的命令行。你输入的命令会在这台机器上执行。")
+            lines.append("按住 Ctrl，滚动鼠标滚轮可以放大或缩小字体。左下角「配色」可以换背景。")
+            lines.append("鼠标选中文字会自动复制，右键或 Shift+Insert 粘贴。")
         lines.append("")
         return "\n".join(lines)
 
@@ -591,7 +603,7 @@ class ShellWindow(tk.Toplevel):
 
     def _set_status(self, text: str) -> None:
         if self.winfo_exists():
-            self.status.set(text)
+            self.status.set(i18n.tr(text))
 
     def _connect(self) -> None:
         password = self._password

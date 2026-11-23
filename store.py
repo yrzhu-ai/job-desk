@@ -198,6 +198,7 @@ class Store:
             "plan_view": "notes",
             "update_last_check": 0,
             "update_skipped": "",
+            "language": "auto",
         }
         if not self.path.exists():
             return default
@@ -676,6 +677,14 @@ class Store:
 
     def set_update_skipped(self, version: str) -> None:
         self.data["update_skipped"] = str(version or "")
+        self.save()
+
+    def language(self) -> str:
+        choice = str(self.data.get("language") or "auto")
+        return choice if choice in {"auto", "zh", "en"} else "auto"
+
+    def set_language(self, choice: str) -> None:
+        self.data["language"] = choice if choice in {"auto", "zh", "en"} else "auto"
         self.save()
 
     def set_plan_nodes(self, plan_id: str, title: str, nodes: list[dict]) -> None:
