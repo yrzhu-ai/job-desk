@@ -15,6 +15,8 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    env:
+      PYTHONIOENCODING: utf-8
     steps:
       - uses: actions/checkout@v4
 
@@ -33,7 +35,7 @@ jobs:
       - name: Prepare assets
         shell: pwsh
         run: |
-          Copy-Item 'dist/作业看台.exe' 'dist/jobdesk.exe'
+          if (-not (Test-Path 'dist/jobdesk.exe')) { throw 'jobdesk.exe was not built' }
           $hash = (Get-FileHash 'dist/jobdesk.exe' -Algorithm SHA256).Hash
           "$hash *jobdesk.exe" | Out-File 'dist/jobdesk.exe.sha256' -Encoding utf8
           Write-Output "sha256=$hash"
