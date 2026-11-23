@@ -231,6 +231,7 @@ PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"^排 (.+)$"), r"queued \1"),
     (re.compile(r"^已复制 (\d+) 个字符$"), r"Copied \1 characters"),
     (re.compile(r"^还有 (\d+) 件，打开管家可以看全。$"), r"And \1 more; open the planner to see all."),
+    (re.compile(r"^(\d+) 个作业$"), r"\1 jobs"),
 ]
 
 
@@ -394,6 +395,13 @@ def install() -> None:
                 pass
 
     tk.Toplevel.__init__ = patched_init
+
+
+def counts(run: int, wait: int, done: int, bad: int) -> str:
+    """One line summary used in the status bar and tab subtitles."""
+    if language.english:
+        return f"Run {run} · Queue {wait} · Done {done} · Fail {bad}"
+    return f"运行 {run}，排队 {wait}，完成 {done}，报错 {bad}"
 
 
 def _self_test() -> None:

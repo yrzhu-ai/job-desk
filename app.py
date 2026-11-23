@@ -56,7 +56,7 @@ WARN = "#f2b544"
 BAD = "#ff6d7d"
 LINE = "#313c52"
 HEADING = "#2a384c"
-VERSION = "1.0.15"
+VERSION = "1.0.16"
 FONT = ("Microsoft YaHei UI", 10)
 FONT_SMALL = ("Microsoft YaHei UI", 9)
 FONT_TITLE = ("Microsoft YaHei UI", 18, "bold")
@@ -954,6 +954,51 @@ class UpdateDialog(tk.Toplevel):
         self.destroy()
 
 
+class WrapBar(tk.Frame):
+    """Buttons flow left to right and wrap onto new lines when the window narrows."""
+
+    def __init__(self, master, gap: int = 6, row_height: int = 34) -> None:
+        super().__init__(master, bg=BG)
+        self.gap = gap
+        self.row_height = row_height
+        self.items: list[tk.Widget] = []
+        self._last_width = -1
+        self.bind("<Configure>", self._on_configure)
+
+    def add(self, widget: tk.Widget) -> tk.Widget:
+        self.items.append(widget)
+        widget.place(x=0, y=0)
+        self._reflow()
+        return widget
+
+    def _on_configure(self, event) -> None:
+        if abs(event.width - self._last_width) > 2:
+            self._last_width = event.width
+            self._reflow(event.width)
+
+    def _reflow(self, width: int | None = None) -> None:
+        available = width if width else self.winfo_width()
+        if available <= 1:
+            return
+        x = 0
+        row = 0
+        for widget in self.items:
+            try:
+                widget.update_idletasks()
+                need = widget.winfo_reqwidth() + self.gap
+            except tk.TclError:
+                continue
+            if x and x + need > available:
+                row += 1
+                x = 0
+            widget.place(x=x, y=row * self.row_height)
+            x += need
+        try:
+            self.configure(height=(row + 1) * self.row_height)
+        except tk.TclError:
+            pass
+
+
 class App(tk.Tk):
     def __init__(self, store: Store | None = None, user_name: str = "") -> None:
         _enable_dpi()
@@ -1256,33 +1301,30 @@ class App(tk.Tk):
         outer.rowconfigure(5, weight=1)
         header = ttk.Frame(outer, style="App.TFrame")
         header.grid(row=0, column=0, sticky="ew")
-        who = f"    {self.user_name}" if self.user_name else ""
-        ttk.Label(header, text=f"{i18n.tr('作业看台')}  {VERSION}{who}", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(header, text="Linux 作业，和自己要做的事。只查询，不提交也不取消。", style="Muted.TLabel").pack(anchor="w", pady=(2, 0))
-        nav = ttk.Frame(header, style="App.TFrame")
-        nav.pack(fill="x", pady=(10, 0))
+        nav = WrapBar(header)
+        nav.pack(fill="x")
         self.jobs_mode_btn = ttk.Button(nav, text="作业", command=lambda: self.set_mode("jobs"))
-        self.jobs_mode_btn.pack(side="left", padx=(0, 6))
+        nav.add(self.jobs_mode_btn)
         self.plans_mode_btn = ttk.Button(nav, text="管家", command=lambda: self.set_mode("plans"))
-        self.plans_mode_btn.pack(side="left", padx=(0, 6))
-        ttk.Button(nav, text="账号密码", style="Accent.TButton", command=self.open_accounts).pack(side="left", padx=(0, 12))
+        nav.add(self.plans_mode_btn)
+        nav.add(ttk.Button(nav, text="账号密码", style="Accent.TButton", command=self.open_accounts))
         self.brief_btn = ttk.Button(nav, text="简洁", command=lambda: self.set_view("brief"))
-        self.brief_btn.pack(side="left", padx=(0, 4))
+        nav.add(self.brief_btn)
         self.full_btn = ttk.Button(nav, text="完整", command=lambda: self.set_view("full"))
-        self.full_btn.pack(side="left", padx=(0, 8))
+        nav.add(self.full_btn)
         self.refresh_btn = ttk.Button(nav, text="立即刷新", style="Accent.TButton", command=self.refresh)
-        self.refresh_btn.pack(side="left", padx=(0, 6))
-        ttk.Button(nav, text="悬浮球", style="Ghost.TButton", command=self.minimize_to_ball).pack(side="left", padx=(0, 10))
+        nav.add(self.refresh_btn)
+        nav.add(ttk.Button(nav, text="悬浮球", style="Ghost.TButton", command=self.minimize_to_ball))
         self.hide_done = tk.BooleanVar(value=bool(self.store.data.get("hide_done_jobs")))
         self.hide_bad = tk.BooleanVar(value=bool(self.store.data.get("hide_bad_jobs")))
-        tk.Checkbutton(nav, text="隐藏完成", variable=self.hide_done, command=self.toggle_hide, bg=BG, fg=FG, selectcolor=PANEL, activebackground=BG, activeforeground=FG, font=FONT_SMALL).pack(side="left")
-        tk.Checkbutton(nav, text="隐藏报错", variable=self.hide_bad, command=self.toggle_hide, bg=BG, fg=FG, selectcolor=PANEL, activebackground=BG, activeforeground=FG, font=FONT_SMALL).pack(side="left", padx=(4, 0))
-        ttk.Button(nav, text="退出登录", style="Ghost.TButton", command=self.logout).pack(side="right")
-        ttk.Button(nav, text="皮肤", style="Ghost.TButton", command=self.open_skin_menu).pack(side="right", padx=(0, 6))
-        ttk.Button(nav, text="语言", style="Ghost.TButton", command=self.open_language_menu).pack(side="right", padx=(0, 6))
-        ttk.Button(nav, text="文字", style="Ghost.TButton", command=self.open_text_style).pack(side="right", padx=(0, 6))
+        nav.add(tk.Checkbutton(nav, text="隐藏完成", variable=self.hide_done, command=self.toggle_hide, bg=BG, fg=FG, selectcolor=PANEL, activebackground=BG, activeforeground=FG, font=FONT_SMALL))
+        nav.add(tk.Checkbutton(nav, text="隐藏报错", variable=self.hide_bad, command=self.toggle_hide, bg=BG, fg=FG, selectcolor=PANEL, activebackground=BG, activeforeground=FG, font=FONT_SMALL))
         self.update_btn = ttk.Button(nav, text="检查更新", style="Ghost.TButton", command=self.check_updates)
-        self.update_btn.pack(side="right", padx=(0, 6))
+        nav.add(self.update_btn)
+        nav.add(ttk.Button(nav, text="文字", style="Ghost.TButton", command=self.open_text_style))
+        nav.add(ttk.Button(nav, text="语言", style="Ghost.TButton", command=self.open_language_menu))
+        nav.add(ttk.Button(nav, text="皮肤", style="Ghost.TButton", command=self.open_skin_menu))
+        nav.add(ttk.Button(nav, text="退出登录", style="Ghost.TButton", command=self.logout))
 
         tab_row = ttk.Frame(outer, style="App.TFrame")
         self.tab_row = tab_row
@@ -1524,7 +1566,7 @@ class App(tk.Tk):
     def _paint_mode(self) -> None:
         due = len(due_plans(self.store.plans(), date.today()))
         self.jobs_mode_btn.configure(style="Accent.TButton" if self.mode == "jobs" else "Ghost.TButton")
-        self.plans_mode_btn.configure(text=f"管家 {due}" if due else "管家", style="Accent.TButton" if self.mode == "plans" else "Ghost.TButton")
+        self.plans_mode_btn.configure(text=f"{i18n.tr('管家')} {due}" if due else i18n.tr("管家"), style="Accent.TButton" if self.mode == "plans" else "Ghost.TButton")
 
     def set_mode(self, mode: str) -> None:
         if mode not in {"jobs", "plans"}:
@@ -1644,7 +1686,7 @@ class App(tk.Tk):
     def _paint_later(self) -> None:
         count = len(self.store.later_keys())
         if count:
-            self.later_btn.configure(text=f"稍后 {count}")
+            self.later_btn.configure(text=f"{i18n.tr('稍后')} {count}")
             if not self.later_btn.winfo_ismapped():
                 self.later_btn.pack(side="left", padx=(8, 0))
         elif self.later_btn.winfo_ismapped():
@@ -2022,7 +2064,7 @@ class App(tk.Tk):
                 self.refresh()
             else:
                 minutes, seconds = divmod(int(remain), 60)
-                self.count_var.set(f"下次自动刷新 {minutes:02d}:{seconds:02d}")
+                self.count_var.set(i18n.tr(f"下次自动刷新 {minutes:02d}:{seconds:02d}"))
         if not self.busy and not getattr(self, "_updating", False):
             if time.time() - self.store.update_last_check() > UPDATE_CHECK_HOURS * 3600:
                 self.check_updates(silent=True)
@@ -2135,7 +2177,7 @@ class App(tk.Tk):
             self.jobs.extend(result.jobs)
             run, wait, done, bad = self._count_jobs(result.jobs)
             note = f"  {result.notice}" if result.notice else ""
-            lines.append(("ok", f"{title}  {result.username}@{result.host}:{result.port}  运行 {run}，排队 {wait}，完成 {done}，报错 {bad}{note}"))
+            lines.append(("ok", f"{title}  {result.username}@{result.host}:{result.port}  {i18n.counts(run, wait, done, bad)}{note}"))
         self.fail_count = fails
         if not self.jobs and setup_gaps and fails == 0:
             self.empty_reason = "账号已经在列表里，但还没有密码。\n点「账号密码」补上密码并保存。"
@@ -2149,7 +2191,7 @@ class App(tk.Tk):
         fresh = finished_since(previous, [job for job in self.jobs if self._shown(job)])
         self.store.set_job_buckets(next_buckets(previous, self.jobs))
         self.last_stamp = time.strftime("%H:%M:%S")
-        self.meta_var.set(f"上次刷新 {self.last_stamp}")
+        self.meta_var.set(i18n.tr(f"上次刷新 {self.last_stamp}"))
         self.next_at = time.monotonic() + REFRESH_SECONDS
         self.title(self._window_title("" if fails == 0 else f"{fails} 个账号未连上"))
         self._set_status(lines or [("muted", "没有账号结果。")])
@@ -2200,8 +2242,8 @@ class App(tk.Tk):
     def tab_name(self, account_id: str) -> str:
         for index, account in enumerate(self.store.accounts(), start=1):
             if account["id"] == account_id:
-                return f"账号{index}"
-        return "账号"
+                return i18n.tr(f"账号{index}")
+        return i18n.tr("账号")
 
     def display_account(self, job: Job) -> str:
         tab = self.tab_name(job.account_id)
@@ -2303,23 +2345,23 @@ class App(tk.Tk):
 
     def _tab_title(self, key: str) -> str:
         if key == "all":
-            return "全部"
+            return i18n.tr("全部")
         for index, account in enumerate(self.store.accounts(), start=1):
             if account["id"] == key:
                 label = (account.get("label") or "").strip()
                 username = account.get("username") or ""
                 if label and label != username:
-                    return f"账号{index}  {label}"
-                return f"账号{index}"
-        return "账号"
+                    return i18n.tr(f"账号{index}  {label}")
+                return i18n.tr(f"账号{index}")
+        return i18n.tr("账号")
 
     def _tab_subtitle(self, key: str) -> str:
         if key == "all":
             run, wait, done, bad = self._counts_for(None)
-            return f"{run + wait + done + bad} 个作业"
+            return i18n.tr(f"{run + wait + done + bad} 个作业")
         result = self.account_results.get(key)
         if result and result.error:
-            return "无密码" if _setup_gap(result.error) else "未连上"
+            return i18n.tr("无密码") if _setup_gap(result.error) else i18n.tr("未连上")
         if result and result.top_text and not result.jobs:
             return "top"
         run, wait, done, bad = self._counts_for(key)
@@ -2435,7 +2477,7 @@ class App(tk.Tk):
             if bucket in counts:
                 counts[bucket] += 1
         for key, title in FILTERS:
-            self.filter_buttons[key].configure(text=f"{title} {counts[key]}")
+            self.filter_buttons[key].configure(text=f"{i18n.tr(title)} {counts[key]}")
         self._style_filters()
         if self.sort_col:
             rows.sort(key=lambda job: _column_value(self.sort_col or "", job), reverse=self.sort_desc)
