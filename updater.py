@@ -27,9 +27,18 @@ class UpdateOffer:
         self.size = size
 
 
+def _core(text: str) -> str:
+    return str(text or "").strip().lstrip("vV").split("-", 1)[0].split("+", 1)[0]
+
+
+def is_beta(version: str) -> bool:
+    raw = str(version or "").strip().lstrip("vV")
+    return "-" in raw or "+" in raw
+
+
 def parse_version(text: str) -> tuple[int, ...]:
     parts: list[int] = []
-    for piece in str(text or "").strip().lstrip("vV").split("."):
+    for piece in _core(text).split("."):
         if not piece.isdigit():
             break
         parts.append(int(piece))
@@ -42,7 +51,10 @@ def is_newer(remote: str, local: str) -> bool:
     width = max(len(left), len(right))
     left = left + (0,) * (width - len(left))
     right = right + (0,) * (width - len(right))
-    return left > right
+    if left != right:
+        return left > right
+    # Same number: a beta is older than the stable release of that number.
+    return is_beta(local) and not is_beta(remote)
 
 
 def _url_in(path: Path) -> str:
@@ -288,9 +300,13 @@ def launch_swap(downloaded: Path, pid: int) -> None:
 
 def _self_test() -> None:
     assert parse_version("v1.0.10") == (1, 0, 10)
+    assert parse_version("1.0.18-beta.1") == (1, 0, 18)
     assert is_newer("1.0.1", "1.0.0")
     assert not is_newer("1.0.0", "1.0.1")
     assert not is_newer("1.0.0", "1.0.0")
+    assert is_newer("1.0.18", "1.0.18-beta.1")
+    assert not is_newer("1.0.18-beta.1", "1.0.18")
+    assert is_newer("1.0.18-beta.2", "1.0.17")
     try:
         _https_json("http://example.com/update.json", 100)
     except UpdateError as exc:

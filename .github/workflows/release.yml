@@ -28,11 +28,7 @@ jobs:
           pip install -r requirements.txt pyinstaller
 
       - name: Build the exe
-        run: >
-          python -m PyInstaller --noconfirm --windowed --onefile
-          --name 作业看台 --icon quill.ico
-          --add-data "quill.ico;." --add-data "update_url.txt;."
-          app.py
+        run: python build.py
 
       - name: Prepare assets
         shell: pwsh

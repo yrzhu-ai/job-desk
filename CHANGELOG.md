@@ -5,6 +5,31 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.18] - 2026-11-23
+
+### Added
+- Bilingual interface is now complete for dynamic text too: tab titles, filter counts,
+  table headers, job/planner context menus, update dialogs, skin names, planner labels,
+  date headings and reminder options.
+- The executable carries version metadata: Properties → Details shows the product,
+  version and author.
+
+### Changed
+- The toolbar is split into two rows (filters + Later on top, search + range + timers
+  below) so nothing is squeezed out; the "Later" button stays visible in both languages.
+- Removed the "Hide done / Hide failed" checkboxes from the toolbar.
+- Versioning: beta builds use `x.y.z-beta.N` and are never offered to stable users;
+  stable releases always win over a beta of the same number.
+
+### Fixed
+- Table headers stayed Chinese after a refresh.
+- Job and planner context menus were never translated.
+- The update check button reverted to Chinese after a manual check.
+
+### Build
+- `build.py` now builds the exe for both local use and CI, with a version resource and
+  UPX disabled, which lowers antivirus false positives.
+
 ## [1.0.17] - 2026-11-23
 
 ### Changed
@@ -46,6 +71,7 @@ First public release.
 - Automatic updates from GitHub Releases with SHA-256 verification.
 - GitHub Actions workflow that builds and publishes a release on tag push.
 
+[1.0.18]: https://github.com/yrzhu-ai/job-desk/releases/tag/v1.0.18
 [1.0.17]: https://github.com/yrzhu-ai/job-desk/releases/tag/v1.0.17
 [1.0.16]: https://github.com/yrzhu-ai/job-desk/releases/tag/v1.0.16
 [1.0.15]: https://github.com/yrzhu-ai/job-desk/releases/tag/v1.0.15

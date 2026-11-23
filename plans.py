@@ -166,10 +166,14 @@ def week_bounds(today: date) -> tuple[date, date]:
 
 def week_label(today: date) -> str:
     start, end = week_bounds(today)
+    if i18n.language.english:
+        return f"This week    {start.month}/{start.day}–{end.month}/{end.day}"
     return f"本周    {start.month}月{start.day}日–{end.month}月{end.day}日"
 
 
 def month_label(today: date) -> str:
+    if i18n.language.english:
+        return f"This month    {today.year}-{today.month:02d}"
     return f"本月    {today.year}年{today.month}月"
 
 
@@ -387,11 +391,11 @@ class PlanBoard(tk.Frame):
         self.trash_btn.pack(side="left")
 
         tk.Label(top, text="提醒", bg=BG, fg=MUTED, font=FONT_SMALL).pack(side="right", padx=(0, 6))
-        self.remind_box = ttk.Combobox(top, width=8, state="readonly", textvariable=self.remind_var, values=[label for _minutes, label in REMIND_CHOICES])
+        self.remind_box = ttk.Combobox(top, width=8, state="readonly", textvariable=self.remind_var, values=[i18n.tr(label) for _minutes, label in REMIND_CHOICES])
         self.remind_box.pack(side="right", padx=(0, 12))
         self.remind_box.bind("<<ComboboxSelected>>", self._on_remind)
         current = app.store.plan_remind_minutes()
-        self.remind_var.set(dict(REMIND_CHOICES).get(current, "30 分钟"))
+        self.remind_var.set(i18n.tr(dict(REMIND_CHOICES).get(current, "30 分钟")))
 
         body = tk.Frame(self, bg=BG)
         body.grid(row=1, column=0, sticky="nsew")
@@ -452,6 +456,12 @@ class PlanBoard(tk.Frame):
             self.view_month = self.selected.month
         self.reload()
 
+    def apply_language(self) -> None:
+        self.remind_box.configure(values=[i18n.tr(label) for _minutes, label in REMIND_CHOICES])
+        current = self.app.store.plan_remind_minutes()
+        self.remind_var.set(i18n.tr(dict(REMIND_CHOICES).get(current, "30 分钟")))
+        self.reload()
+
     def _style_filters(self, plans: list[dict]) -> None:
         alive = [plan for plan in plans if not plan.get("trashed")]
         counts = {
@@ -464,11 +474,14 @@ class PlanBoard(tk.Frame):
         }
         for key, label in BOARD_FILTERS:
             if key == "today" and self.selected != date.today():
-                label = f"{self.selected.month}月{self.selected.day}日"
+                if i18n.language.english:
+                    label = f"{self.selected.month}/{self.selected.day}"
+                else:
+                    label = f"{self.selected.month}月{self.selected.day}日"
             button = self.filter_buttons[key]
             chosen = key == self.board_filter
             button.configure(
-                text=f"{label} {counts[key]}",
+                text=f"{i18n.tr(label)} {counts[key]}",
                 bg=ACCENT if chosen else PANEL,
                 fg=palette.on_accent if chosen else FG,
                 activebackground=ACCENT if chosen else CARD,
@@ -476,8 +489,8 @@ class PlanBoard(tk.Frame):
             )
         archive_count = sum(1 for plan in alive if (plan.get("status") or "") == "done")
         trash_count = sum(1 for plan in plans if plan.get("trashed"))
-        self._paint_side(self.archive_btn, "archive", f"档案 {archive_count}")
-        self._paint_side(self.trash_btn, "trash", f"垃圾桶 {trash_count}")
+        self._paint_side(self.archive_btn, "archive", f"{i18n.tr('档案')} {archive_count}")
+        self._paint_side(self.trash_btn, "trash", f"{i18n.tr('垃圾桶')} {trash_count}")
         self._style_views()
 
     def _paint_side(self, button: tk.Button, key: str, text: str) -> None:
@@ -594,6 +607,17 @@ class PlanBoard(tk.Frame):
 
     def _heading(self, day: date) -> str:
         today = date.today()
+    def _heading(self, day: date) -> str:
+        today = date.today()
+        if i18n.language.english:
+            weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+            if day == today:
+                name = "Today"
+            elif day == today + timedelta(days=1):
+                name = "Tomorrow"
+            else:
+                name = f"{day.month}/{day.day}"
+            return f"{name}    {day.isoformat()}    {weekdays[day.weekday()]}"
         if day == today:
             name = "今天"
         elif day == today + timedelta(days=1):
@@ -616,9 +640,9 @@ class PlanBoard(tk.Frame):
         if self.board_filter == "today":
             self.day_title.set(self._heading(self.selected))
         else:
-            self.day_title.set(titles.get(self.board_filter, ""))
+            self.day_title.set(i18n.tr(titles.get(self.board_filter, "")))
         add_labels = {"week": "加到本周", "month": "加到本月", "term": "加到本学期", "today": "加到这一天"}
-        self.quick_btn.configure(text=add_labels.get(self.board_filter, "加一条"))
+        self.quick_btn.configure(text=i18n.tr(add_labels.get(self.board_filter, "加一条")))
         self._loaded_day = self.selected.isoformat()
 
     def _save_current_day(self) -> None:
@@ -795,7 +819,7 @@ class PlanBoard(tk.Frame):
             when = tk.Label(row, text=f"{due.month}月{due.day}日", bg=paper, fg=ink, font=("Microsoft YaHei UI", 8))
             when._plan_control = True
             when.pack(side="left", padx=(6, 0))
-        picker = tk.Label(row, text="改期 ▾", bg=paper, fg=ink, font=("Microsoft YaHei UI", 8), cursor="hand2", padx=2)
+        picker = tk.Label(row, text=i18n.tr("改期") + " ▾", bg=paper, fg=ink, font=("Microsoft YaHei UI", 8), cursor="hand2", padx=2)
         picker._plan_control = True
         picker.pack(side="right", padx=(4, 0))
         picker.bind("<Button-1>", lambda event, item=plan: self._due_menu(event, item))
@@ -888,6 +912,7 @@ class PlanBoard(tk.Frame):
         else:
             menu.add_command(label="放进垃圾桶", command=lambda item=plan: self._trash_note(item))
         try:
+            i18n.apply(menu)
             menu.tk_popup(event.x_root, event.y_root)
         finally:
             menu.grab_release()
@@ -1169,6 +1194,7 @@ class PlanBoard(tk.Frame):
         menu.add_separator()
         menu.add_command(label="自定义日期…", command=lambda item=plan: self._ask_due(item))
         try:
+            i18n.apply(menu)
             menu.tk_popup(event.x_root, event.y_root)
         finally:
             menu.grab_release()
@@ -1191,7 +1217,7 @@ class PlanBoard(tk.Frame):
 
     def _on_remind(self, _event=None) -> None:
         selected = self.remind_var.get()
-        minutes = next((value for value, label in REMIND_CHOICES if label == selected), 30)
+        minutes = next((value for value, label in REMIND_CHOICES if i18n.tr(label) == selected), 30)
         self.app.store.set_plan_remind_minutes(minutes)
         self.app.store.touch_plan_remind()
 

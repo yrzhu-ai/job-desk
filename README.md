@@ -76,11 +76,34 @@ python app.py            # run
 Package a single executable:
 
 ```bash
-python -m PyInstaller --noconfirm --windowed --onefile --name 作业看台 ^
-  --icon quill.ico --add-data "quill.ico;." --add-data "update_url.txt;." app.py
+python build.py          # writes dist/作业看台.exe with a version resource
 ```
 
-or just double-click `打包成exe.bat`.
+or just double-click `打包成exe.bat`. `build.py` reads `VERSION` from `app.py`,
+generates `version_info.txt` and builds with UPX disabled.
+
+## Windows may warn about this app
+
+The executable is **not code-signed**, so Windows SmartScreen shows
+*"Windows protected your PC"* the first time someone runs it:
+
+> More info → **Run anyway**
+
+Two things you can do to verify a download is genuine:
+
+- Compare its SHA-256 with `jobdesk.exe.sha256` attached to the same release:
+  `certutil -hashfile jobdesk.exe SHA256`
+- Check the file's Properties → Details tab: it should show *Job Desk* and the
+  matching version.
+
+False-positive reports are welcome — open an issue and include the version.
+Bitdefender/360/火绒 occasionally flag PyInstaller one-file builds heuristically;
+UPX is already disabled to reduce that.
+
+If you distribute this widely and want the warning gone, a code-signing
+certificate is required (OV/EV certificate, or Microsoft Azure Trusted Signing).
+That is a paid, identity-verified service; see
+[Microsoft's signing docs](https://learn.microsoft.com/azure/trusted-signing/).
 
 ## Releasing
 

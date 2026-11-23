@@ -56,7 +56,7 @@ WARN = "#f2b544"
 BAD = "#ff6d7d"
 LINE = "#313c52"
 HEADING = "#2a384c"
-VERSION = "1.0.17"
+VERSION = "1.0.18"
 FONT = ("Microsoft YaHei UI", 10)
 FONT_SMALL = ("Microsoft YaHei UI", 9)
 FONT_TITLE = ("Microsoft YaHei UI", 18, "bold")
@@ -287,6 +287,7 @@ class FloatBall(tk.Toplevel):
         self.app.restore_from_ball()
 
     def _menu(self, event) -> None:
+        i18n.apply(self.menu)
         self.menu.tk_popup(event.x_root, event.y_root)
 
     def _refresh(self) -> None:
@@ -1220,8 +1221,7 @@ class App(tk.Tk):
         menu = tk.Menu(self, tearoff=0)
         current = self.store.language()
         for key, label in i18n.LANGUAGES:
-            mark = "" if current == key else ""
-            menu.add_command(label=(label + mark), command=lambda name=key: self.apply_language(name))
+            menu.add_command(label=i18n.tr(label), command=lambda name=key: self.apply_language(name))
         try:
             menu.tk_popup(self.winfo_pointerx(), self.winfo_pointery())
         finally:
@@ -1232,13 +1232,17 @@ class App(tk.Tk):
         i18n.language.code = i18n.resolve(choice)
         i18n.apply(self)
         self.title(self._window_title())
+        if hasattr(self, "plan_board"):
+            self.plan_board.apply_language()
         self.redraw()
 
     def open_skin_menu(self) -> None:
         menu = tk.Menu(self, tearoff=0, bg=PANEL, fg=FG, activebackground=ACCENT, activeforeground=palette.on_accent, font=FONT)
         for key, spec in SKINS.items():
-            mark = "    当前" if key == palette.name else ""
-            menu.add_command(label=spec["label"] + mark, command=lambda name=key: self.apply_skin(name))
+            label = i18n.tr(spec["label"])
+            if key == palette.name:
+                label += "    " + i18n.tr("当前")
+            menu.add_command(label=label, command=lambda name=key: self.apply_skin(name))
         try:
             menu.tk_popup(self.winfo_pointerx(), self.winfo_pointery())
         finally:
@@ -1317,8 +1321,6 @@ class App(tk.Tk):
         nav.add(ttk.Button(nav, text="悬浮球", style="Ghost.TButton", command=self.minimize_to_ball))
         self.hide_done = tk.BooleanVar(value=bool(self.store.data.get("hide_done_jobs")))
         self.hide_bad = tk.BooleanVar(value=bool(self.store.data.get("hide_bad_jobs")))
-        nav.add(tk.Checkbutton(nav, text="隐藏完成", variable=self.hide_done, command=self.toggle_hide, bg=BG, fg=FG, selectcolor=PANEL, activebackground=BG, activeforeground=FG, font=FONT_SMALL))
-        nav.add(tk.Checkbutton(nav, text="隐藏报错", variable=self.hide_bad, command=self.toggle_hide, bg=BG, fg=FG, selectcolor=PANEL, activebackground=BG, activeforeground=FG, font=FONT_SMALL))
         self.update_btn = ttk.Button(nav, text="检查更新", style="Ghost.TButton", command=self.check_updates)
         nav.add(self.update_btn)
         nav.add(ttk.Button(nav, text="文字", style="Ghost.TButton", command=self.open_text_style))
@@ -1356,7 +1358,12 @@ class App(tk.Tk):
         tool = ttk.Frame(outer, style="App.TFrame")
         self.tool = tool
         tool.grid(row=4, column=0, sticky="ew", pady=(10, 8))
-        self.filter_bar = ttk.Frame(tool, style="App.TFrame")
+        row1 = ttk.Frame(tool, style="App.TFrame")
+        row1.pack(fill="x")
+        row2 = ttk.Frame(tool, style="App.TFrame")
+        row2.pack(fill="x", pady=(6, 0))
+
+        self.filter_bar = ttk.Frame(row1, style="App.TFrame")
         self.filter_bar.pack(side="left")
         self.filter_buttons: dict[str, ttk.Button] = {}
         for key, title in FILTERS:
@@ -1366,19 +1373,20 @@ class App(tk.Tk):
         self.top_on = False
         self.top_btn = ttk.Button(self.filter_bar, text="top", style="Ghost.TButton", command=self.toggle_top)
         self.top_btn.pack(side="left", padx=(0, 6))
-        self.search_caption = ttk.Label(tool, text="搜索", style="Muted.TLabel")
-        self.search_caption.pack(side="left", padx=(8, 4))
-        search = tk.Entry(tool, textvariable=self.search_var, width=18, bg=PANEL, fg=FG, insertbackground=FG, relief="flat", font=FONT, highlightthickness=1, highlightbackground=LINE, highlightcolor=ACCENT)
+        self.later_btn = ttk.Button(row1, text="稍后", style="Ghost.TButton", command=self.open_later)
+
+        self.search_caption = ttk.Label(row2, text="搜索", style="Muted.TLabel")
+        self.search_caption.pack(side="left", padx=(0, 4))
+        search = tk.Entry(row2, textvariable=self.search_var, width=18, bg=PANEL, fg=FG, insertbackground=FG, relief="flat", font=FONT, highlightthickness=1, highlightbackground=LINE, highlightcolor=ACCENT)
         search.pack(side="left", ipady=3)
         self.search_var.trace_add("write", lambda *_args: self.redraw())
-        ttk.Label(tool, text="结束作业近", style="Muted.TLabel").pack(side="left", padx=(12, 4))
-        self.days_box = ttk.Combobox(tool, width=4, state="readonly", values=("1", "3", "7", "14", "30"))
+        ttk.Label(row2, text="结束作业近", style="Muted.TLabel").pack(side="left", padx=(12, 4))
+        self.days_box = ttk.Combobox(row2, width=4, state="readonly", values=("1", "3", "7", "14", "30"))
         self.days_box.set(str(self.store.history_days()))
         self.days_box.pack(side="left")
         self.days_box.bind("<<ComboboxSelected>>", self.on_days)
-        ttk.Label(tool, text="天", style="Muted.TLabel").pack(side="left", padx=(4, 0))
-        self.later_btn = ttk.Button(tool, text="稍后", style="Ghost.TButton", command=self.open_later)
-        meta = ttk.Frame(tool, style="App.TFrame")
+        ttk.Label(row2, text="天", style="Muted.TLabel").pack(side="left", padx=(4, 0))
+        meta = ttk.Frame(row2, style="App.TFrame")
         meta.pack(side="right")
         ttk.Label(meta, textvariable=self.meta_var, style="Muted.TLabel").pack(side="left", padx=(0, 12))
         ttk.Label(meta, textvariable=self.count_var, style="Muted.TLabel").pack(side="left")
@@ -1722,7 +1730,10 @@ class App(tk.Tk):
             self.brief.grid_remove()
             self.table.grid()
             if not self.filter_bar.winfo_ismapped():
-                self.filter_bar.pack(side="left", before=self.search_caption)
+                if self.later_btn.winfo_ismapped():
+                    self.filter_bar.pack(side="left", before=self.later_btn)
+                else:
+                    self.filter_bar.pack(side="left")
 
     def on_stat(self, name: str) -> None:
         if name == "done" and self.hide_done.get():
@@ -1785,7 +1796,7 @@ class App(tk.Tk):
             return
         if found is None:
             try:
-                self.update_btn.configure(text="检查更新")
+                self.update_btn.configure(text=i18n.tr("检查更新"))
             except tk.TclError:
                 pass
             if not silent:
@@ -1900,12 +1911,20 @@ class App(tk.Tk):
 
     def ball_detail(self) -> str:
         run, wait, done, bad = self._counts_for(None)
-        lines = [f"运行 {run}    排队 {wait}", f"完成 {done}    报错 {bad}"]
+        english = i18n.language.english
+        if english:
+            lines = [f"Run {run}    Queue {wait}", f"Done {done}    Fail {bad}"]
+        else:
+            lines = [f"运行 {run}    排队 {wait}", f"完成 {done}    报错 {bad}"]
         for account in self.store.accounts():
             one_run, one_wait, one_done, one_bad = self._counts_for(account["id"])
             if one_run + one_wait + one_done + one_bad == 0 and account["id"] not in self.account_results:
                 continue
-            lines.append(f"{self.tab_name(account['id'])}  运行{one_run} 排队{one_wait} 完成{one_done} 报错{one_bad}")
+            name = self.tab_name(account["id"])
+            if english:
+                lines.append(f"{name}  run {one_run} queue {one_wait} done {one_done} fail {one_bad}")
+            else:
+                lines.append(f"{name}  运行{one_run} 排队{one_wait} 完成{one_done} 报错{one_bad}")
         return "\n".join(lines)
 
     def toggle_top(self) -> None:
@@ -2339,6 +2358,7 @@ class App(tk.Tk):
         menu.add_command(label="进入命令行", command=lambda name=key: self.open_account_shell(name))
         self._tab_menu = menu
         try:
+            i18n.apply(menu)
             menu.tk_popup(event.x_root, event.y_root)
         finally:
             menu.grab_release()
@@ -2486,7 +2506,7 @@ class App(tk.Tk):
             rows.sort(key=lambda job: {"run": 0, "wait": 1, "other": 2, "bad": 3, "done": 4}.get(job_bucket(job), 5))
         for cid, title, _width, _stretch in COLUMNS:
             mark = " ↓" if self.sort_col == cid and self.sort_desc else " ↑" if self.sort_col == cid else ""
-            self.tree.heading(cid, text=title + mark, command=lambda column=cid: self.on_sort(column))
+            self.tree.heading(cid, text=i18n.tr(title) + mark, command=lambda column=cid: self.on_sort(column))
         children = self.tree.get_children()
         if children:
             self.tree.delete(*children)
@@ -2600,6 +2620,7 @@ class App(tk.Tk):
         box.selection_set(index)
         self._context_job = rows[index]
         self._prepare_menu(self._context_job)
+        i18n.apply(self.menu)
         self.menu.tk_popup(event.x_root, event.y_root)
 
     def on_tree_click(self, event) -> None:
@@ -2707,6 +2728,7 @@ class App(tk.Tk):
         self.tree.focus(row)
         self._context_job = self.row_jobs.get(row)
         self._prepare_menu(self._context_job)
+        i18n.apply(self.menu)
         self.menu.tk_popup(event.x_root, event.y_root)
 
     def _prepare_menu(self, job: Job | None) -> None:

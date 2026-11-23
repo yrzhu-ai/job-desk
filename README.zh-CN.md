@@ -68,11 +68,31 @@ python app.py            # 直接运行
 打包成单个 exe：
 
 ```bash
-python -m PyInstaller --noconfirm --windowed --onefile --name 作业看台 ^
-  --icon quill.ico --add-data "quill.ico;." --add-data "update_url.txt;." app.py
+python build.py          # 生成 dist/作业看台.exe，带版本信息
 ```
 
-或者直接双击 `打包成exe.bat`。
+或者直接双击 `打包成exe.bat`。`build.py` 会读取 `app.py` 里的 `VERSION`，
+生成 `version_info.txt`，并关闭 UPX 压缩。
+
+## Windows 可能提示风险
+
+这个 exe **没有数字签名**，别人第一次运行时 Windows SmartScreen 会提示
+*「Windows 已保护你的电脑」*：
+
+> 更多信息 → **仍要运行**
+
+想确认下载的文件没被掉包，可以做两件事：
+
+- 对比同一 Release 里 `jobdesk.exe.sha256` 的哈希：
+  `certutil -hashfile jobdesk.exe SHA256`
+- 右键 exe → 属性 → 详细信息，应显示 *Job Desk* 和对应版本号
+
+如果杀毒软件误报（360/火绒偶尔会把 PyInstaller 单文件打包当作可疑程序），
+欢迎提 Issue 并附版本号。为了减少误报，构建时已经关闭了 UPX 压缩。
+
+如果将来要对外大规模分发、希望彻底去掉这个提示，就需要**代码签名证书**
+（OV/EV 证书，或微软 Azure Trusted Signing）——这是需要实名审核的付费服务，
+参见[微软签名文档](https://learn.microsoft.com/azure/trusted-signing/)。
 
 ## 发布新版本
 
