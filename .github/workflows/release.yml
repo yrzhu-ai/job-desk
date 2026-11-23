@@ -1,11 +1,12 @@
 name: build-and-release
 
-# 目前手动触发：Actions 页面 -> build-and-release -> Run workflow。
-# 想改成“打 tag 自动发布”，把下面的 workflow_dispatch 换成：
-#   push:
-#     tags: ["v*"]
+# 打一个 v1.0.17 这样的 tag 会自动构建并发布 Release。
+# 也可以在 Actions 页面手动 Run workflow，只构建并上传产物，不发版。
 
 on:
+  push:
+    tags:
+      - "v*"
   workflow_dispatch:
 
 permissions:
@@ -33,16 +34,26 @@ jobs:
           --add-data "quill.ico;." --add-data "update_url.txt;."
           app.py
 
-      - name: Write checksum
+      - name: Prepare assets
         shell: pwsh
         run: |
-          $hash = (Get-FileHash 'dist/作业看台.exe' -Algorithm SHA256).Hash
-          "$hash *作业看台.exe" | Out-File 'dist/作业看台.exe.sha256' -Encoding utf8
+          Copy-Item 'dist/作业看台.exe' 'dist/jobdesk.exe'
+          $hash = (Get-FileHash 'dist/jobdesk.exe' -Algorithm SHA256).Hash
+          "$hash *jobdesk.exe" | Out-File 'dist/jobdesk.exe.sha256' -Encoding utf8
           Write-Output "sha256=$hash"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: 作业看台
+          name: jobdesk
           path: |
-            dist/作业看台.exe
-            dist/作业看台.exe.sha256
+            dist/jobdesk.exe
+            dist/jobdesk.exe.sha256
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/jobdesk.exe
+            dist/jobdesk.exe.sha256
+          generate_release_notes: true
