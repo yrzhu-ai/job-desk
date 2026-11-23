@@ -120,6 +120,8 @@ def _https_json(url: str, limit: int, headers: dict | None = None, missing_ok: b
     except urllib.error.HTTPError as exc:
         if missing_ok and exc.code == 404:
             return {}
+        if exc.code == 403:
+            raise UpdateError("GitHub 接口暂时限流，过一会儿再试（不影响使用）。") from exc
         raise UpdateError(f"更新地址返回了 {exc.code}。") from exc
     except Exception as exc:
         raise UpdateError(f"没有连上更新地址：{exc}") from exc
