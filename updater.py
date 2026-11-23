@@ -13,6 +13,14 @@ from pathlib import Path
 
 from store import data_dir
 
+_API_TOKEN = ""
+
+
+def set_token(token: str) -> None:
+    """Optional GitHub token: raises the API quota from 60/h to 5000/h."""
+    global _API_TOKEN
+    _API_TOKEN = str(token or "").strip()
+
 
 class UpdateError(Exception):
     pass
@@ -118,6 +126,8 @@ def _https_json(url: str, limit: int, headers: dict | None = None, missing_ok: b
     if not url.startswith("https://"):
         raise UpdateError("更新地址需要以 https:// 开头。")
     merged = {"User-Agent": "LinuxJobDesk"}
+    if _API_TOKEN and "api.github.com" in url:
+        merged["Authorization"] = f"Bearer {_API_TOKEN}"
     if headers:
         merged.update(headers)
     request = urllib.request.Request(url, headers=merged)

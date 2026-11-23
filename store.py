@@ -682,9 +682,28 @@ class Store:
     def language(self) -> str:
         choice = str(self.data.get("language") or "auto")
         return choice if choice in {"auto", "zh", "en"} else "auto"
-
     def set_language(self, choice: str) -> None:
         self.data["language"] = choice if choice in {"auto", "zh", "en"} else "auto"
+        self.save()
+
+    def has_github_token(self) -> bool:
+        return bool(self.data.get("github_token"))
+
+    def github_token(self) -> str:
+        raw = self.data.get("github_token") or ""
+        if not raw:
+            return ""
+        try:
+            return unprotect(base64.b64decode(raw.encode("ascii"))).decode("utf-8")
+        except Exception:
+            return ""
+
+    def set_github_token(self, token: str) -> None:
+        text = (token or "").strip()
+        if text:
+            self.data["github_token"] = base64.b64encode(protect(text.encode("utf-8"))).decode("ascii")
+        else:
+            self.data.pop("github_token", None)
         self.save()
 
     def set_plan_nodes(self, plan_id: str, title: str, nodes: list[dict]) -> None:

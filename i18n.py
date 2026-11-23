@@ -44,7 +44,11 @@ EN: dict[str, str] = {
     "不提醒": "Off",
     # dialogs / hints
     "更新": "Update",
+    "设置": "Settings",
     "密码留空表示不修改。": "Leave the password empty to keep it unchanged.",
+    "已经填过 Token（留空表示不修改）。": "A GitHub token is already saved (leave empty to keep it).",
+    "还没有填 Token（可选）。": "No GitHub token yet (optional).",
+    "可选。填一个 GitHub Token，更新检查的额度会从每小时 60 次提升到 5000 次。在 GitHub → Settings → Developer settings 生成，权限只需 public_repo（或只读）。留空表示不修改。": "Optional. A GitHub token raises the update-check quota from 60 to 5000 requests per hour. Create one under GitHub -> Settings -> Developer settings; public_repo (or read-only) is enough. Leave empty to keep the current one.",
     "这个账号还没有密码。": "This account has no saved password yet.",
     "能用密码登录的 Linux 都可以加。有 Slurm 就看作业；没有作业系统时自动改看 top。密码只加密留在这台电脑。程序只查询，不提交也不取消。附加 PATH 可选，squeue 不在默认 PATH 时再填目录，多个用英文冒号，不要空格。修改时密码留空表示不改。": "Any Linux account you can log into with a password works. With Slurm you get the job board; without a scheduler the app falls back to top. The password is encrypted and kept on this PC only. The app only reads state - it never submits or cancels jobs. Extra PATH is optional: set it when squeue is not on the default PATH; separate folders with colons, no spaces. Leave the password empty when editing to keep it.",
     "使用快速回答，不开启深度思考。只发送作业状态或你写下的那段话，不发送账号密码。": "Uses fast answers with no deep reasoning. Only job state or the paragraph you typed is sent - never account passwords.",

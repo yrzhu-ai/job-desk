@@ -39,7 +39,7 @@ from jobs import (
 )
 from store import Store, _check_login, check_user, data_dir, last_user_name, legacy_waiting, register_user, user_folder
 from theme import SKINS, TEXT_CHOICES, TEXT_SIZES, apply_text, palette, restyle, sync_modules, text_look
-from updater import UpdateError, download_release, launch_swap, look_for_update, save_update_url, update_url
+from updater import UpdateError, download_release, launch_swap, look_for_update, save_update_url, set_token, update_url
 import i18n
 from winsecret import SecretError
 
@@ -56,7 +56,7 @@ WARN = "#f2b544"
 BAD = "#ff6d7d"
 LINE = "#313c52"
 HEADING = "#2a384c"
-VERSION = "1.0.18"
+VERSION = "1.0.19"
 FONT = ("Microsoft YaHei UI", 10)
 FONT_SMALL = ("Microsoft YaHei UI", 9)
 FONT_TITLE = ("Microsoft YaHei UI", 18, "bold")
@@ -436,7 +436,7 @@ class SettingsDialog(tk.Toplevel):
         super().__init__(app)
         self.withdraw()
         self.app = app
-        self.title("DeepSeek")
+        self.title("设置")
         self.configure(bg=BG)
         self.resizable(False, False)
         self.transient(app)
@@ -444,22 +444,27 @@ class SettingsDialog(tk.Toplevel):
         self.model_var = tk.StringVar(value=app.store.api_model())
         self.key_var = tk.StringVar()
         self.show_var = tk.BooleanVar(value=False)
+        self.token_var = tk.StringVar()
         self.note = tk.StringVar(value="密钥留空表示不修改。" if app.store.has_api_key() else "还没有密钥。")
+        self.token_note = tk.StringVar(value="已经填过 Token（留空表示不修改）。" if app.store.has_github_token() else "还没有填 Token（可选）。")
         pad = tk.Frame(self, bg=BG)
         pad.pack(fill="both", expand=True, padx=16, pady=16)
         self._row(pad, 0, "接口地址", self.base_var)
         self._row(pad, 1, "模型", self.model_var)
         self.key_entry = self._row(pad, 2, "API Key", self.key_var, show="*")
         tk.Checkbutton(pad, text="显示密钥", variable=self.show_var, command=self.toggle, bg=BG, fg=FG, selectcolor=PANEL, activebackground=BG, activeforeground=FG, font=FONT_SMALL).grid(row=3, column=1, sticky="w")
-        tk.Label(pad, text="使用快速回答，不开启深度思考。只发送作业状态或你写下的那段话，不发送账号密码。", bg=BG, fg=MUTED, font=FONT_SMALL, wraplength=420, justify="left").grid(row=4, column=0, columnspan=2, sticky="w", pady=(8, 6))
-        tk.Label(pad, textvariable=self.note, bg=BG, fg=WARN, font=FONT_SMALL, wraplength=420, justify="left").grid(row=5, column=0, columnspan=2, sticky="w")
+        self._row(pad, 4, "GitHub Token", self.token_var, show="*")
+        tk.Label(pad, text="可选。填一个 GitHub Token，更新检查的额度会从每小时 60 次提升到 5000 次。在 GitHub → Settings → Developer settings 生成，权限只需 public_repo（或只读）。留空表示不修改。", bg=BG, fg=MUTED, font=FONT_SMALL, wraplength=440, justify="left").grid(row=5, column=0, columnspan=2, sticky="w", pady=(4, 6))
+        tk.Label(pad, textvariable=self.token_note, bg=BG, fg=MUTED, font=FONT_SMALL, wraplength=440, justify="left").grid(row=6, column=0, columnspan=2, sticky="w", pady=(0, 6))
+        tk.Label(pad, text="使用快速回答，不开启深度思考。只发送作业状态或你写下的那段话，不发送账号密码。", bg=BG, fg=MUTED, font=FONT_SMALL, wraplength=420, justify="left").grid(row=7, column=0, columnspan=2, sticky="w", pady=(8, 6))
+        tk.Label(pad, textvariable=self.note, bg=BG, fg=WARN, font=FONT_SMALL, wraplength=420, justify="left").grid(row=8, column=0, columnspan=2, sticky="w")
         bar = tk.Frame(pad, bg=BG)
-        bar.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        bar.grid(row=9, column=0, columnspan=2, sticky="ew", pady=(12, 0))
         ttk.Button(bar, text="保存", style="Accent.TButton", command=self.save).pack(side="left")
         ttk.Button(bar, text="清除密钥", style="Ghost.TButton", command=self.clear_key).pack(side="left", padx=8)
         ttk.Button(bar, text="关闭", style="Ghost.TButton", command=self.destroy).pack(side="right")
         pad.columnconfigure(1, weight=1)
-        center_on(self, app, 560, 340)
+        center_on(self, app, 600, 470)
         self.deiconify()
         self.grab_set()
 
@@ -484,6 +489,16 @@ class SettingsDialog(tk.Toplevel):
         except SecretError as exc:
             messagebox.showerror("DeepSeek", str(exc), parent=self)
             return
+        token = self.token_var.get().replace("\r", "").replace("\n", "").strip()
+        if token:
+            try:
+                self.app.store.set_github_token(token)
+            except SecretError as exc:
+                messagebox.showerror("DeepSeek", str(exc), parent=self)
+                return
+            set_token(token)
+            self.token_var.set("")
+            self.token_note.set("已经填过 Token（留空表示不修改）。")
         self.key_var.set("")
         self.note.set("已保存。")
 
@@ -1005,6 +1020,7 @@ class App(tk.Tk):
         _enable_dpi()
         super().__init__()
         self.store = store or Store()
+        set_token(self.store.github_token())
         self.user_name = user_name
         self.restart_login = False
         palette.use(self.store.skin())

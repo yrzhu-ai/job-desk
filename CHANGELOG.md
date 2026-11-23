@@ -5,6 +5,17 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.19] - 2026-11-23
+
+### Added
+- Optional **GitHub token** in Settings. The anonymous GitHub API quota is 60 requests
+  per hour per IP, which shared networks can exhaust; a token raises it to 5000/hour.
+  The token is encrypted with DPAPI and only sent to `api.github.com`.
+
+### Changed
+- The settings window is now titled "设置 / Settings" and keeps both the DeepSeek key
+  and the GitHub token.
+
 ## [1.0.18] - 2026-11-23
 
 ### Added
@@ -71,6 +82,7 @@ First public release.
 - Automatic updates from GitHub Releases with SHA-256 verification.
 - GitHub Actions workflow that builds and publishes a release on tag push.
 
+[1.0.19]: https://github.com/yrzhu-ai/job-desk/releases/tag/v1.0.19
 [1.0.18]: https://github.com/yrzhu-ai/job-desk/releases/tag/v1.0.18
 [1.0.17]: https://github.com/yrzhu-ai/job-desk/releases/tag/v1.0.17
 [1.0.16]: https://github.com/yrzhu-ai/job-desk/releases/tag/v1.0.16
