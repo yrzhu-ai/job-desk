@@ -14,12 +14,19 @@ from pathlib import Path
 from store import data_dir
 
 _API_TOKEN = ""
+_MANUAL_PROXY = ""
 
 
 def set_token(token: str) -> None:
     """Optional GitHub token: raises the API quota from 60/h to 5000/h."""
     global _API_TOKEN
     _API_TOKEN = str(token or "").strip()
+
+
+def set_proxy(proxy: str) -> None:
+    """Optional proxy used when Windows' own proxy setting is off."""
+    global _MANUAL_PROXY
+    _MANUAL_PROXY = str(proxy or "").strip()
 
 
 class UpdateError(Exception):
@@ -122,6 +129,44 @@ def parse_source(text: str) -> tuple[str, str]:
     return "json", raw
 
 
+def _system_proxy() -> str:
+    """Read the Windows "Internet Settings" proxy so downloads work behind one."""
+    try:
+        import winreg
+
+        path = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, path) as key:
+            enabled = int(winreg.QueryValueEx(key, "ProxyEnable")[0] or 0)
+            if not enabled:
+                return ""
+            server = str(winreg.QueryValueEx(key, "ProxyServer")[0] or "").strip()
+    except Exception:
+        return ""
+    if not server:
+        return ""
+    if "=" in server:
+        parts = {}
+        for piece in server.split(";"):
+            if "=" in piece:
+                name, value = piece.split("=", 1)
+                parts[name.strip().lower()] = value.strip()
+        server = parts.get("https") or parts.get("http") or ""
+    if not server:
+        return ""
+    return server if "://" in server else "http://" + server
+
+
+def _open(request, timeout: int):
+    proxy = _MANUAL_PROXY or _system_proxy()
+    handlers = []
+    if proxy:
+        if "://" not in proxy:
+            proxy = "http://" + proxy
+        handlers.append(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
+    opener = urllib.request.build_opener(*handlers)
+    return opener.open(request, timeout=timeout)
+
+
 def _https_json(url: str, limit: int, headers: dict | None = None, missing_ok: bool = False) -> dict:
     if not url.startswith("https://"):
         raise UpdateError("更新地址需要以 https:// 开头。")
@@ -132,7 +177,7 @@ def _https_json(url: str, limit: int, headers: dict | None = None, missing_ok: b
         merged.update(headers)
     request = urllib.request.Request(url, headers=merged)
     try:
-        with urllib.request.urlopen(request, timeout=12) as response:
+        with _open(request, 12) as response:
             final = str(response.geturl() or "")
             if not final.startswith("https://"):
                 raise UpdateError("更新地址跳到了不安全的链接。")
@@ -258,7 +303,7 @@ def download_release(url: str, sha256: str = "", size: int = 0) -> Path:
     target = folder / "作业看台-new.exe"
     request = urllib.request.Request(url, headers={"User-Agent": "LinuxJobDesk"})
     try:
-        with urllib.request.urlopen(request, timeout=120) as response:
+        with _open(request, 120) as response:
             final = str(response.geturl() or "")
             if not final.startswith("https://"):
                 raise UpdateError("下载地址跳到了不安全的链接。")

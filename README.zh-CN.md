@@ -128,3 +128,6 @@ GitHub Actions 会自动构建 exe、计算 SHA-256 并发布 Release
 ## 许可
 
 [MIT](LICENSE) © 2026 yrzhu-ai
+
+`pets/fish/` 里的宠物动画来自 [dsh-pet](https://github.com/TuWeiZhi/dsh-pet)
+（代码 MIT，素材允许非商业使用）。本软件免费，不收费。

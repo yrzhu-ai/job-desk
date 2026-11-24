@@ -98,6 +98,10 @@ def main() -> int:
         "quill.ico;.",
         "--add-data",
         "update_url.txt;.",
+        "--add-data",
+        "pets;pets",
+        "--collect-all",
+        "av",
         "--clean",
         "app.py",
     ]

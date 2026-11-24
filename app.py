@@ -3,22 +3,28 @@
 from __future__ import annotations
 
 import ctypes
+import math
 import os
 import queue
+import random
 import re
 import sys
 import threading
 import time
 import tkinter as tk
+import traceback
 import winsound
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
-from tkinter import messagebox, ttk
+from tkinter import filedialog, font as tkfont, messagebox, ttk
+
+from PIL import Image, ImageTk
 
 from ask import AskError, ask_deepseek, completions_url, snapshot_text
 from plans import PlanBoard, PlanRemind, center_on, due_plans, tell
+from petart import PetArt, find_skin, list_skins
 from shellwin import ShellWindow
 from jobs import (
     AccountResult,
@@ -39,8 +45,10 @@ from jobs import (
 )
 from store import Store, _check_login, check_user, data_dir, last_user_name, legacy_waiting, register_user, user_folder
 from theme import SKINS, TEXT_CHOICES, TEXT_SIZES, apply_text, palette, restyle, sync_modules, text_look
-from updater import UpdateError, download_release, launch_swap, look_for_update, save_update_url, set_token, update_url
+from updater import UpdateError, download_release, launch_swap, look_for_update, save_update_url, set_proxy, set_token, update_url
 import i18n
+from wallpaper import Wallpaper
+from fishvideo import FishVideo
 from winsecret import SecretError
 
 REFRESH_SECONDS = 10 * 60
@@ -56,7 +64,7 @@ WARN = "#f2b544"
 BAD = "#ff6d7d"
 LINE = "#313c52"
 HEADING = "#2a384c"
-VERSION = "1.0.19"
+VERSION = "1.0.20"
 FONT = ("Microsoft YaHei UI", 10)
 FONT_SMALL = ("Microsoft YaHei UI", 9)
 FONT_TITLE = ("Microsoft YaHei UI", 18, "bold")
@@ -80,12 +88,19 @@ FILTERS = (
     ("done", "已完成"),
     ("bad", "报错"),
 )
+BG_FITS = (
+    ("fill", "填充"),
+    ("fit", "适应"),
+    ("stretch", "拉伸"),
+    ("tile", "平铺"),
+    ("center", "居中"),
+    ("span", "跨区"),
+)
 BRIEF = (
     ("run", "运行中"),
     ("wait", "排队"),
     ("done", "已完成"),
-    ("bad", "报错"),
-)
+    ("bad", "报错"),)
 
 
 def _bucket_ink(key: str) -> str:
@@ -172,10 +187,15 @@ def _setup_gap(error: str) -> bool:
 
 
 class FloatBall(tk.Toplevel):
+    """A small animated pet that also keeps the job counters visible."""
+
+    NUM_W = 96
+    NUM_H = 34
+    IDLE_TRICK_AFTER = 180.0
+
     def __init__(self, app: "App") -> None:
         super().__init__(app)
         self.app = app
-        self.size = 108
         self.overrideredirect(True)
         self.attributes("-topmost", True)
         self.configure(bg="#010101")
@@ -183,36 +203,72 @@ class FloatBall(tk.Toplevel):
             self.wm_attributes("-transparentcolor", "#010101")
         except tk.TclError:
             pass
-        self.canvas = tk.Canvas(self, width=self.size, height=self.size, bg="#010101", highlightthickness=0, cursor="hand2")
+        self.canvas = tk.Canvas(self, width=self.NUM_W, height=self.NUM_H, bg="#010101", highlightthickness=0, cursor="hand2")
+        self._num_font = tkfont.Font(self, family="Consolas", size=10, weight="bold")
+        self._msg_font = tkfont.Font(self, family="Microsoft YaHei UI", size=9)
         self.canvas.pack()
         self.canvas.bind("<ButtonPress-1>", self._down)
         self.canvas.bind("<B1-Motion>", self._drag)
         self.canvas.bind("<ButtonRelease-1>", self._up)
+        self.canvas.bind("<Double-Button-1>", self._double)
         self.canvas.bind("<Button-3>", self._menu)
         self.canvas.bind("<Enter>", self._enter)
         self.canvas.bind("<Leave>", self._leave)
         self.tip = None
         self.tip_label = None
-        self.menu = tk.Menu(self, tearoff=0)
-        self.menu.add_command(label="打开", command=app.restore_from_ball)
-        self.menu.add_command(label="立即刷新", command=self._refresh)
-        self.menu.add_separator()
-        self.menu.add_command(label="退出", command=self._quit)
         self._moved = False
+        self._run = 0
+        self._wait = 0
+        self._done = 0
+        self._bad = 0
+        self._win_w = self.NUM_W
+        self._win_h = self.NUM_H
+        self._mode = "num"
+        self._message = ""
+        self._mode_until = 0.0
+        self._pet_state = "idle"
+        self._frame = 0
+        self._frame_at = 0.0
+        self._photo = None
+        self._backdrop = None
+        self._activity = time.monotonic()
+        self._tick_job = None
+        self._pending_click = None
+        self._gossip_at = time.monotonic() + random.uniform(60, 120)
+        self.art = PetArt(self, find_skin(app.store.pet_skin()) or None)
+        self.fish = FishVideo()
+        self._action = ""
+        self._fish_gen = None
+        self._fish_at = 0.0
+        self._fish_arr = None
+        self._fish_bbox = None
+        self._fish_layout = None
+        self._fish_item = None
+        self._count_items: list[int] = []
+        self._show_counts = bool(self.app.store.data.get("ball_counts", True))
+        self._small_font = tkfont.Font(self, family="Consolas", size=8, weight="bold")
+        self._counts_var = tk.BooleanVar(value=self._show_counts)
+        self._auto = bool(self.app.store.data.get("fish_auto", True))
+        self._auto_var = tk.BooleanVar(value=self._auto)
         self.withdraw()
 
-    def render(self, run: int, wait: int, done: int) -> None:
-        canvas = self.canvas
-        canvas.delete("all")
-        span = self.size
-        canvas.create_oval(6, 6, span - 6, span - 6, fill=palette.accent, outline=palette.on_accent, width=2)
-        active = run + wait
-        size = 24 if active < 100 else 19
-        canvas.create_text(span / 2, 48, text=f"{run}/{active}", fill=palette.on_accent, font=("Microsoft YaHei UI", size, "bold"))
-        canvas.create_text(span / 2, 80, text=f"✓ {done}", fill=palette.on_accent, font=("Segoe UI Symbol", 10))
+    def render(self, run: int, wait: int, done: int, bad: int = 0) -> None:
+        changed = (run, wait, done, bad) != (self._run, self._wait, self._done, self._bad)
+        self._run, self._wait, self._done, self._bad = run, wait, done, bad
+        if changed:
+            self._activity = time.monotonic()
+        if self._mode == "num":
+            self._set_size(self._bar_width(), self.NUM_H)
+        self._draw()
 
-    def show(self, run: int, wait: int, done: int) -> None:
-        self.render(run, wait, done)
+    def show(self, run: int, wait: int, done: int, bad: int = 0) -> None:
+        self._run, self._wait, self._done, self._bad = run, wait, done, bad
+        self._activity = time.monotonic()
+        if self.fish.ready and self.app.store.ball_style() == "fish":
+            self._start_fish(self.fish.pick_idle())
+        else:
+            self._mode = "num"
+            self._set_size(self._bar_width(), self.NUM_H)
         pos = self.app.store.data.get("ball_pos") or []
         if isinstance(pos, list) and len(pos) == 2:
             try:
@@ -221,17 +277,287 @@ class FloatBall(tk.Toplevel):
                 x, y = self._default_pos()
         else:
             x, y = self._default_pos()
-        x = max(0, min(x, self.winfo_screenwidth() - self.size))
-        y = max(0, min(y, self.winfo_screenheight() - self.size))
-        self.geometry(f"{self.size}x{self.size}+{x}+{y}")
+        width, height = self._win_w, self._win_h
+        x = max(0, min(x, self.winfo_screenwidth() - width))
+        y = max(0, min(y, self.winfo_screenheight() - height - 56))
+        self.geometry(f"{width}x{height}+{x}+{y}")
         self.deiconify()
         self.lift()
         self.attributes("-topmost", True)
+        self._draw()
+        self._start_tick()
 
     def hide(self) -> None:
         self._hide_tip()
+        if self._tick_job is not None:
+            try:
+                self.after_cancel(self._tick_job)
+            except tk.TclError:
+                pass
+            self._tick_job = None
         self.withdraw()
 
+    def _set_size(self, width: int, height: int) -> None:
+        if (width, height) == (self._win_w, self._win_h):
+            return
+        self._win_w, self._win_h = width, height
+        try:
+            self.canvas.configure(width=width, height=height)
+            if self.winfo_viewable():
+                self.geometry(f"{width}x{height}+{self.winfo_x()}+{self.winfo_y()}")
+        except tk.TclError:
+            pass
+
+    # ---------- reactions ----------
+    def celebrate(self, kind: str, count: int) -> None:
+        """Job finished: show the pet when art exists, otherwise a short message."""
+        try:
+            if not self.winfo_viewable():
+                return
+        except tk.TclError:
+            return
+        if kind == "done":
+            text = i18n.tr(f"完成 {count} 个任务！") if count > 1 else i18n.tr("搞定一个！")
+            state = "happy"
+        else:
+            text = i18n.tr("别灰心，下次一定行！")
+            state = "sad"
+        self._activity = time.monotonic()
+        if self.art.ready and state in self.art.frames:
+            self._enter_pet(state)
+        else:
+            self._enter_text(text, 3000)
+
+    def _enter_text(self, text: str, hold_ms: int) -> None:
+        self._message = text
+        self._mode = "text"
+        self._mode_until = time.monotonic() + hold_ms / 1000
+        self._set_size(self._bar_width(), self.NUM_H)
+        self._draw()
+
+    def _enter_pet(self, state: str) -> None:
+        self._pet_state = state if state in self.art.frames else "idle"
+        self._frame = 0
+        self._frame_at = time.monotonic()
+        self._mode = "pet"
+        hold = self.art.hold(self._pet_state) or 3000
+        self._mode_until = time.monotonic() + hold / 1000
+        width = max(self.NUM_W, self.art.width)
+        height = max(self.NUM_H, self.art.height)
+        self._set_size(width, height)
+        self._draw()
+
+    def _fish_size(self) -> tuple[int, int]:
+        width = int(self.app.store.fish_width())
+        return width, max(1, int(width * 1.3))
+
+    def _pick_next(self) -> str:
+        if self._auto:
+            pick = self.fish.pick_random() if random.random() < 0.4 else self.fish.pick_idle()
+        else:
+            pick = self._action or self.fish.pick_idle()
+        if pick == self._action and len(self.fish.actions) > 1:
+            pick = self.fish.pick_random()
+        return pick
+
+    def _start_fish(self, action: str) -> None:
+        if not self.fish.exists(action):
+            action = self.fish.pick_idle()
+        self._action = action
+        self._fish_bbox = self.fish.clip_bbox(action)
+        self._fish_gen = self.fish.frames(action)
+        self._fish_at = 0.0
+        self._mode = "fish"
+        fish_w, fish_h = self._fish_size()
+        width = max(fish_w + 12, self.NUM_W)
+        height = fish_h + (24 if self._show_counts else 6)
+        self._set_size(width, height)
+        self._advance_fish()
+
+    def _advance_fish(self) -> None:
+        arr = None
+        if self._fish_gen is not None:
+            try:
+                arr = next(self._fish_gen)
+            except StopIteration:
+                arr = None
+            except Exception:
+                arr = None
+        if arr is None:
+            self._start_fish(self._pick_next())
+            return
+        self._fish_arr = arr
+        self._draw_fish()
+
+    def _draw_fish(self) -> None:
+        if self._fish_arr is None:
+            return
+        canvas = self.canvas
+        width, height = self._win_w, self._win_h
+        fish_w, fish_h = self._fish_size()
+        image = Image.fromarray(self._fish_arr, "RGBA")
+        if self._fish_bbox:
+            image = image.crop(self._fish_bbox)
+        scale = min(fish_w / max(image.width, 1), fish_h / max(image.height, 1))
+        size = (max(1, int(image.width * scale)), max(1, int(image.height * scale)))
+        image = image.resize(size, Image.LANCZOS)
+        mask = image.getchannel("A").point(lambda value: 255 if value >= 72 else 0)
+        backdrop = Image.new("RGBA", (fish_w, fish_h), (1, 1, 1, 255))
+        backdrop.paste(image, ((fish_w - size[0]) // 2, (fish_h - size[1]) // 2), mask)
+        self._photo = ImageTk.PhotoImage(backdrop, master=self)
+        canvas.delete("all")
+        canvas.create_image(width / 2, fish_h / 2 + 2, image=self._photo)
+        self._fish_item = None
+        if not self._show_counts:
+            return
+        top = fish_h + 2
+        canvas.create_rectangle(1, top, width - 1, height - 1, fill=palette.card, outline=palette.line)
+        segments = [
+            (str(self._run), palette.ok),
+            ("/", palette.muted),
+            (str(self._wait), palette.warn),
+            ("/", palette.muted),
+            (str(self._done), palette.fg),
+            ("/", palette.muted),
+            (str(self._bad), palette.bad),
+        ]
+        total = sum(self._small_font.measure(text) for text, _color in segments)
+        x = (width - total) / 2
+        for text, color in segments:
+            canvas.create_text(x, (top + height) / 2, text=text, fill=color, font=self._small_font, anchor="w")
+            x += self._small_font.measure(text)
+
+    def toggle_counts(self) -> None:
+        self._show_counts = bool(self._counts_var.get())
+        self.app.store.data["ball_counts"] = self._show_counts
+        self.app.store.save()
+        if self._mode == "fish":
+            self._start_fish(self._action or self.fish.pick_idle())
+        else:
+            self._draw()
+
+    def open_actions(self) -> None:
+        ActionListWindow(self.app, self)
+
+    def _back_to_numbers(self) -> None:
+        self._mode = "num"
+        self._mode_until = 0.0
+        self._activity = time.monotonic()
+        self._set_size(self.NUM_W, self.NUM_H)
+        self._draw()
+
+    # ---------- drawing ----------
+    def _draw(self) -> None:
+        if not self.winfo_exists():
+            return
+        canvas = self.canvas
+        canvas.delete("all")
+        if self._mode == "fish" and self.fish.ready:
+            self._draw_fish()
+        elif self._mode == "pet" and self.art.ready:
+            self._draw_pet()
+        else:
+            self._draw_numbers()
+
+    def _segments(self) -> list[tuple[str, str]]:
+        return [
+            (str(self._run), palette.ok),
+            (" / ", palette.muted),
+            (str(self._wait), palette.warn),
+            (" / ", palette.muted),
+            (str(self._done), palette.fg),
+            (" / ", palette.muted),
+            (str(self._bad), palette.bad),
+        ]
+
+    def _bar_width(self) -> int:
+        if self._mode == "text" and self._message:
+            return max(self.NUM_W, self._msg_font.measure(self._message) + 28)
+        total = sum(self._num_font.measure(text) for text, _color in self._segments())
+        # keep a stable minimum width so the bar does not jitter as digits change
+        steady = self._num_font.measure("00 / 00 / 000 / 00") + 22
+        return max(self.NUM_W, total + 28, steady)
+
+    def _draw_numbers(self) -> None:
+        canvas = self.canvas
+        width, height = self._win_w, self._win_h
+        text_mode = self._mode == "text"
+        base = palette.accent if text_mode else palette.card
+        photo = None
+        wallpaper = getattr(self.app, "wallpaper", None)
+        if wallpaper is not None and wallpaper.ready:
+            photo = wallpaper.tile(self, width, height, base, 0.55 if text_mode else 0.30)
+        if photo is not None:
+            self._backdrop = photo
+            canvas.create_image(0, 0, image=photo, anchor="nw")
+            canvas.create_rectangle(1, 1, width - 1, height - 1, outline=palette.line)
+        else:
+            canvas.create_rectangle(1, 1, width - 1, height - 1, fill=base, outline=palette.line)
+        if text_mode:
+            canvas.create_text(width / 2, height / 2, text=self._message, fill=palette.on_accent, font=self._msg_font)
+            return
+        segments = self._segments()
+        total = sum(self._num_font.measure(text) for text, _color in segments)
+        x = (width - total) / 2
+        for text, color in segments:
+            canvas.create_text(x, height / 2, text=text, fill=color, font=self._num_font, anchor="w")
+            x += self._num_font.measure(text)
+
+    def _draw_pet(self) -> None:
+        images = self.art.images(self._pet_state)
+        if not images:
+            self._back_to_numbers()
+            return
+        image = images[self._frame % len(images)]
+        self._photo = image
+        self.canvas.create_image(self._win_w / 2, self._win_h / 2, image=image)
+
+    # ---------- animation ----------
+    def _start_tick(self) -> None:
+        if self._tick_job is None:
+            self._tick_job = self.after(1, self._tick)
+
+    def _tick(self) -> None:
+        self._tick_job = None
+        if not self.winfo_exists() or not self.winfo_viewable():
+            return
+        now = time.monotonic()
+        interval = 90
+        if self._mode == "fish":
+            step = 1.0 / max(self.fish.fps, 1)
+            interval = max(16, int(step * 1000))
+            if now - self._fish_at >= step:
+                behind = min(int((now - self._fish_at) / step), 3)
+                for _ in range(max(1, behind)):
+                    try:
+                        self._advance_fish()
+                    except Exception:
+                        break
+                self._fish_at = now
+        elif self._mode != "num" and self._mode_until and now >= self._mode_until:
+            self._back_to_numbers()
+        elif self._mode == "pet" and self.art.ready:
+            step = self.art.ms(self._pet_state) / 1000
+            if now - self._frame_at >= step:
+                self._frame_at = now
+                self._frame += 1
+                self._draw()
+        elif self._mode == "num" and self.art.ready and now - self._activity >= self.IDLE_TRICK_AFTER:
+            if "trick" in self.art.frames:
+                self._enter_pet("trick")
+            else:
+                self._activity = now
+        elif self._mode == "num" and now >= self._gossip_at:
+            self._gossip_at = now + random.uniform(480, 900)
+            if 8 <= datetime.now().hour < 23:
+                text = self.app.ball_gossip()
+                if text:
+                    self._enter_text(text, 4200)
+        try:
+            self._draw()
+        except Exception:
+            pass
+        self._tick_job = self.after(interval, self._tick)
     def _enter(self, _event) -> None:
         if not self._moved:
             self._show_tip()
@@ -252,7 +578,7 @@ class FloatBall(tk.Toplevel):
         width = self.tip.winfo_width()
         x = self.winfo_x() - width - 12
         if x < 8:
-            x = self.winfo_x() + self.size + 12
+            x = self.winfo_x() + self._win_w + 12
         y = max(8, self.winfo_y())
         self.tip.geometry(f"+{x}+{y}")
         self.tip.deiconify()
@@ -262,7 +588,7 @@ class FloatBall(tk.Toplevel):
             self.tip.withdraw()
 
     def _default_pos(self) -> tuple[int, int]:
-        return self.winfo_screenwidth() - self.size - 28, self.winfo_screenheight() - self.size - 72
+        return self.winfo_screenwidth() - self.NUM_W - 28, self.winfo_screenheight() - self.NUM_H - 110
 
     def _down(self, event) -> None:
         self._ox = event.x_root
@@ -284,11 +610,82 @@ class FloatBall(tk.Toplevel):
             self.app.store.data["ball_pos"] = [self.winfo_x(), self.winfo_y()]
             self.app.store.save()
             return
+        if self._pending_click is not None:
+            return
+        self._pending_click = self.after(240, self._interact)
+
+    def _interact(self) -> None:
+        self._pending_click = None
+        self._reaction()
+
+    def _reaction(self) -> None:
+        if not self.fish.ready:
+            self.pat()
+            return
+        candidates = [name for name in self.fish.names() if "开心" in name or "点击" in name]
+        action = random.choice(candidates) if candidates else self.fish.pick_random()
+        was_auto = self._auto
+        self._auto = False
+        self._start_fish(action)
+        if was_auto:
+            self.after(6000, self._resume_auto)
+
+    def _resume_auto(self) -> None:
+        self._auto = True
+        self._auto_var.set(True)
+
+    def _toggle_auto(self) -> None:
+        self._auto = bool(self._auto_var.get())
+        self.app.store.data["fish_auto"] = self._auto
+        self.app.store.save()
+
+    def _open_window(self) -> None:
+        self._pending_click = None
         self.app.restore_from_ball()
 
+    def _double(self, _event) -> None:
+        if self._pending_click is not None:
+            try:
+                self.after_cancel(self._pending_click)
+            except tk.TclError:
+                pass
+            self._pending_click = None
+        self._open_window()
+
+    def pat(self) -> None:
+        """A pat on the head: happy animation, or a short message without art."""
+        if self.art.ready:
+            self._enter_pet("happy")
+        else:
+            self._enter_text(i18n.tr("嘿嘿~"), 2000)
+
+    def reload_art(self) -> None:
+        self.art = PetArt(self, find_skin(self.app.store.pet_skin()) or None)
+        self._back_to_numbers()
+
     def _menu(self, event) -> None:
-        i18n.apply(self.menu)
-        self.menu.tk_popup(event.x_root, event.y_root)
+        menu = tk.Menu(self, tearoff=0)
+        menu.add_command(label="打开", command=self._open_window)
+        if self.fish.ready:
+            menu.add_command(label="互动", command=self._reaction)
+            menu.add_checkbutton(label="随机动作", variable=self._auto_var, command=self._toggle_auto)
+            menu.add_command(label="动作列表…", command=self.open_actions)
+            menu.add_checkbutton(label="显示数字", variable=self._counts_var, command=self.toggle_counts)
+        else:
+            menu.add_command(label="摸摸头", command=self.pat)
+            skins = list_skins()
+            if skins:
+                sub = tk.Menu(menu, tearoff=0)
+                for name in skins:
+                    sub.add_command(label=name, command=lambda skin=name: self.app.set_pet_skin(skin))
+                sub.add_separator()
+                sub.add_command(label="不用宠物", command=lambda: self.app.set_pet_skin(""))
+                menu.add_cascade(label="换个形象", menu=sub)
+        menu.add_command(label="立即刷新", command=self._refresh)
+        menu.add_separator()
+        menu.add_command(label="退出", command=self._quit)
+        i18n.apply(menu)
+        menu.tk_popup(event.x_root, event.y_root)
 
     def _refresh(self) -> None:
         self.app.restore_from_ball()
@@ -297,6 +694,79 @@ class FloatBall(tk.Toplevel):
     def _quit(self) -> None:
         if messagebox.askyesno("退出", "要退出作业看台吗？", parent=self):
             self.app.on_close()
+
+
+class ActionListWindow(tk.Toplevel):
+    """Pick one of the fish animations to play on the ball."""
+
+    def __init__(self, app: "App", ball: FloatBall) -> None:
+        super().__init__(app)
+        self.withdraw()
+        self.app = app
+        self.ball = ball
+        self.title("动作列表")
+        self.configure(bg=BG)
+        self.attributes("-topmost", True)
+        self.minsize(360, 420)
+        pad = tk.Frame(self, bg=BG)
+        pad.pack(fill="both", expand=True, padx=14, pady=12)
+        self.filter_var = tk.StringVar()
+        entry = tk.Entry(pad, textvariable=self.filter_var, bg=PANEL, fg=FG, insertbackground=FG, relief="flat", font=FONT, highlightthickness=1, highlightbackground=LINE, highlightcolor=ACCENT)
+        entry.pack(fill="x", ipady=4)
+        box = tk.Frame(pad, bg=BG)
+        box.pack(fill="both", expand=True, pady=(8, 0))
+        self.listbox = tk.Listbox(box, bg=PANEL, fg=FG, selectbackground=ACCENT, selectforeground=palette.on_accent, relief="flat", font=FONT_SMALL, activestyle="none", exportselection=False)
+        bar = ttk.Scrollbar(box, orient="vertical", command=self.listbox.yview)
+        self.listbox.configure(yscrollcommand=bar.set)
+        self.listbox.pack(side="left", fill="both", expand=True)
+        bar.pack(side="right", fill="y")
+        self.buttons = tk.Frame(pad, bg=BG)
+        self.buttons.pack(fill="x", pady=(10, 0))
+        ttk.Button(self.buttons, text="播放", style="Accent.TButton", command=self.play_selected).pack(side="left")
+        ttk.Button(self.buttons, text="随机", style="Ghost.TButton", command=self.play_random).pack(side="left", padx=6)
+        ttk.Button(self.buttons, text="关闭", style="Ghost.TButton", command=self.destroy).pack(side="right")
+        self.filter_var.trace_add("write", lambda *_args: self.refill())
+        self.listbox.bind("<Double-Button-1>", lambda _event: self.play_selected())
+        self.refill()
+        width, height = 420, 500
+        try:
+            x = max(0, ball.winfo_x() + ball._win_w - width)
+            y = max(0, ball.winfo_y() - height - 8)
+        except tk.TclError:
+            x, y = 200, 200
+        if y < 8:
+            y = max(8, ball.winfo_y() + ball._win_h + 8)
+        x = max(8, min(x, self.winfo_screenwidth() - width - 8))
+        self.geometry(f"{width}x{height}+{x}+{y}")
+        self.deiconify()
+        self.lift()
+        self.focus_force()
+        entry.focus_set()
+
+    def refill(self) -> None:
+        keyword = self.filter_var.get().strip().lower()
+        self.listbox.delete(0, "end")
+        self._shown = [name for name in self.ball.fish.names() if not keyword or keyword in name.lower()]
+        for name in self._shown:
+            self.listbox.insert("end", name)
+
+    def play_selected(self) -> None:
+        selection = self.listbox.curselection()
+        if not selection:
+            return
+        name = self._shown[selection[0]]
+        if not self.ball.winfo_viewable():
+            self.app.minimize_to_ball()
+        self.ball._auto = False
+        self.ball._auto_var.set(False)
+        self.ball._start_fish(name)
+
+    def play_random(self) -> None:
+        if not self.ball.winfo_viewable():
+            self.app.minimize_to_ball()
+        self.ball._auto = True
+        self.ball._auto_var.set(True)
+        self.ball._start_fish(self.ball.fish.pick_random())
 
 
 class DonePopup(tk.Toplevel):
@@ -445,34 +915,165 @@ class SettingsDialog(tk.Toplevel):
         self.key_var = tk.StringVar()
         self.show_var = tk.BooleanVar(value=False)
         self.token_var = tk.StringVar()
+        self.proxy_var = tk.StringVar(value=app.store.proxy())
+        self.bg_var = tk.StringVar(value=app.store.bg_image())
+        self.fit_var = tk.StringVar(value=i18n.tr(dict(BG_FITS).get(app.store.bg_fit(), "填充")))
+        self._fit_by_label = {i18n.tr(label): key for key, label in BG_FITS}
+        self.skin_var = tk.StringVar(value=i18n.tr(SKINS[palette.name]["label"]))
+        self.size_var = tk.StringVar(value=str(app.store.text_size()))
+        self.lang_var = tk.StringVar(value=i18n.tr(dict(i18n.LANGUAGES).get(app.store.language(), "跟随系统")))
+        self._skin_by_label = {i18n.tr(spec["label"]): key for key, spec in SKINS.items()}
+        self._lang_by_label = {i18n.tr(label): key for key, label in i18n.LANGUAGES}
         self.note = tk.StringVar(value="密钥留空表示不修改。" if app.store.has_api_key() else "还没有密钥。")
         self.token_note = tk.StringVar(value="已经填过 Token（留空表示不修改）。" if app.store.has_github_token() else "还没有填 Token（可选）。")
-        pad = tk.Frame(self, bg=BG)
-        pad.pack(fill="both", expand=True, padx=16, pady=16)
-        self._row(pad, 0, "接口地址", self.base_var)
-        self._row(pad, 1, "模型", self.model_var)
-        self.key_entry = self._row(pad, 2, "API Key", self.key_var, show="*")
-        tk.Checkbutton(pad, text="显示密钥", variable=self.show_var, command=self.toggle, bg=BG, fg=FG, selectcolor=PANEL, activebackground=BG, activeforeground=FG, font=FONT_SMALL).grid(row=3, column=1, sticky="w")
-        self._row(pad, 4, "GitHub Token", self.token_var, show="*")
-        tk.Label(pad, text="可选。填一个 GitHub Token，更新检查的额度会从每小时 60 次提升到 5000 次。在 GitHub → Settings → Developer settings 生成，权限只需 public_repo（或只读）。留空表示不修改。", bg=BG, fg=MUTED, font=FONT_SMALL, wraplength=440, justify="left").grid(row=5, column=0, columnspan=2, sticky="w", pady=(4, 6))
-        tk.Label(pad, textvariable=self.token_note, bg=BG, fg=MUTED, font=FONT_SMALL, wraplength=440, justify="left").grid(row=6, column=0, columnspan=2, sticky="w", pady=(0, 6))
-        tk.Label(pad, text="使用快速回答，不开启深度思考。只发送作业状态或你写下的那段话，不发送账号密码。", bg=BG, fg=MUTED, font=FONT_SMALL, wraplength=420, justify="left").grid(row=7, column=0, columnspan=2, sticky="w", pady=(8, 6))
-        tk.Label(pad, textvariable=self.note, bg=BG, fg=WARN, font=FONT_SMALL, wraplength=420, justify="left").grid(row=8, column=0, columnspan=2, sticky="w")
-        bar = tk.Frame(pad, bg=BG)
-        bar.grid(row=9, column=0, columnspan=2, sticky="ew", pady=(12, 0))
-        ttk.Button(bar, text="保存", style="Accent.TButton", command=self.save).pack(side="left")
-        ttk.Button(bar, text="清除密钥", style="Ghost.TButton", command=self.clear_key).pack(side="left", padx=8)
+
+        tabs = ttk.Notebook(self)
+        tabs.pack(fill="both", expand=True, padx=14, pady=(14, 6))
+        self._tab_look(tabs)
+        self._tab_net(tabs)
+        self._tab_deepseek(tabs)
+        self._tab_account(tabs)
+
+        bar = tk.Frame(self, bg=BG)
+        bar.pack(fill="x", padx=16, pady=(0, 14))
+        ttk.Button(bar, text="确定", style="Accent.TButton", command=self.save).pack(side="left")
         ttk.Button(bar, text="关闭", style="Ghost.TButton", command=self.destroy).pack(side="right")
-        pad.columnconfigure(1, weight=1)
-        center_on(self, app, 600, 470)
+        center_on(self, app, 700, 600)
         self.deiconify()
         self.grab_set()
+
+    def _page(self, tabs: ttk.Notebook, title: str) -> tk.Frame:
+        page = tk.Frame(tabs, bg=BG, padx=14, pady=12)
+        tabs.add(page, text=title)
+        page.columnconfigure(1, weight=1)
+        return page
+
+    def _caption(self, page: tk.Frame, row: int, text: str) -> None:
+        tk.Label(page, text=text, bg=BG, fg=FG, font=FONT, width=10, anchor="e").grid(row=row, column=0, sticky="e", padx=(0, 8), pady=5)
+
+    def _hint(self, page: tk.Frame, row: int, text: str) -> None:
+        tk.Label(page, text=text, bg=BG, fg=MUTED, font=FONT_SMALL, wraplength=460, justify="left").grid(row=row, column=0, columnspan=2, sticky="w", pady=(2, 6))
+
+    def _tab_look(self, tabs: ttk.Notebook) -> None:
+        page = self._page(tabs, "外观")
+        self._caption(page, 0, "皮肤")
+        skin = ttk.Combobox(page, state="readonly", textvariable=self.skin_var, values=list(self._skin_by_label))
+        skin.grid(row=0, column=1, sticky="ew", pady=5)
+        skin.bind("<<ComboboxSelected>>", self._on_skin)
+        self._caption(page, 1, "文字大小")
+        size = ttk.Combobox(page, state="readonly", textvariable=self.size_var, values=[str(value) for value in TEXT_SIZES])
+        size.grid(row=1, column=1, sticky="ew", pady=5)
+        size.bind("<<ComboboxSelected>>", self._on_size)
+        self._caption(page, 2, "语言")
+        lang = ttk.Combobox(page, state="readonly", textvariable=self.lang_var, values=list(self._lang_by_label))
+        lang.grid(row=2, column=1, sticky="ew", pady=5)
+        lang.bind("<<ComboboxSelected>>", self._on_lang)
+        self._caption(page, 3, "背景图片")
+        bgrow = tk.Frame(page, bg=BG)
+        bgrow.grid(row=3, column=1, sticky="ew", pady=5)
+        entry = tk.Entry(bgrow, textvariable=self.bg_var, bg=PANEL, fg=FG, insertbackground=FG, relief="flat", font=FONT_SMALL, highlightthickness=1, highlightbackground=LINE, highlightcolor=ACCENT)
+        entry.pack(side="left", fill="x", expand=True, ipady=4)
+        ttk.Button(bgrow, text="浏览…", style="Ghost.TButton", command=self.pick_bg).pack(side="left", padx=(6, 0))
+        ttk.Button(bgrow, text="清除", style="Ghost.TButton", command=self.clear_bg).pack(side="left", padx=(6, 0))
+        self._hint(page, 4, "可选。选一张图片铺在便利贴看板和悬浮条上；图片会按当前皮肤色调淡化，保证文字清楚。")
+        self._caption(page, 5, "契合度")
+        fit = ttk.Combobox(page, state="readonly", textvariable=self.fit_var, values=[i18n.tr(label) for _key, label in BG_FITS])
+        fit.grid(row=5, column=1, sticky="ew", pady=5)
+        self._hint(page, 6, "和 Windows 壁纸一样：填充铺满、适应完整显示、拉伸变形铺满、平铺重复、居中居中放置、跨区整块拉伸。")
+        self._caption(page, 7, "悬浮球")
+        self.ball_style_var = tk.StringVar(value="鱼" if self.app.store.ball_style() == "fish" else "只显示数字")
+        ball_style = ttk.Combobox(page, state="readonly", textvariable=self.ball_style_var, values=["鱼", "只显示数字"])
+        ball_style.grid(row=7, column=1, sticky="ew", pady=5)
+        ball_style.bind("<<ComboboxSelected>>", self._on_ball_style)
+        self._caption(page, 8, "鱼的大小")
+        self.fish_size_var = tk.StringVar(value=str(self.app.store.fish_width()))
+        fish_size = ttk.Combobox(page, state="readonly", textvariable=self.fish_size_var, values=["96", "120", "160"])
+        fish_size.grid(row=8, column=1, sticky="ew", pady=5)
+        fish_size.bind("<<ComboboxSelected>>", self._on_fish_size)
+
+    def _tab_net(self, tabs: ttk.Notebook) -> None:
+        page = self._page(tabs, "网络与更新")
+        self._caption(page, 0, "GitHub Token")
+        entry = tk.Entry(page, textvariable=self.token_var, show="*", bg=PANEL, fg=FG, insertbackground=FG, relief="flat", font=FONT, highlightthickness=1, highlightbackground=LINE, highlightcolor=ACCENT)
+        entry.grid(row=0, column=1, sticky="ew", pady=5, ipady=4)
+        self._hint(page, 1, "可选。填一个 GitHub Token，更新检查的额度会从每小时 60 次提升到 5000 次。在 GitHub → Settings → Developer settings 生成，权限只需 public_repo（或只读）。留空表示不修改。")
+        tk.Label(page, textvariable=self.token_note, bg=BG, fg=MUTED, font=FONT_SMALL, wraplength=460, justify="left").grid(row=2, column=0, columnspan=2, sticky="w", pady=(0, 6))
+        self._caption(page, 3, "代理")
+        proxy = tk.Entry(page, textvariable=self.proxy_var, bg=PANEL, fg=FG, insertbackground=FG, relief="flat", font=FONT, highlightthickness=1, highlightbackground=LINE, highlightcolor=ACCENT)
+        proxy.grid(row=3, column=1, sticky="ew", pady=5, ipady=4)
+        self._hint(page, 4, "可选。例如 http://127.0.0.1:7897。Windows 系统代理开着时优先用系统的；没开又需要下载更新时，可以在这里填。")
+        ttk.Button(page, text="检查更新", style="Ghost.TButton", command=lambda: self.app.check_updates()).grid(row=5, column=0, columnspan=2, sticky="w", pady=(6, 0))
+
+    def _tab_deepseek(self, tabs: ttk.Notebook) -> None:
+        page = self._page(tabs, "DeepSeek")
+        self._row(page, 0, "接口地址", self.base_var)
+        self._row(page, 1, "模型", self.model_var)
+        self.key_entry = self._row(page, 2, "API Key", self.key_var, show="*")
+        tk.Checkbutton(page, text="显示密钥", variable=self.show_var, command=self.toggle, bg=BG, fg=FG, selectcolor=PANEL, activebackground=BG, activeforeground=FG, font=FONT_SMALL).grid(row=3, column=1, sticky="w")
+        self._hint(page, 4, "使用快速回答，不开启深度思考。只发送作业状态或你写下的那段话，不发送账号密码。")
+        tk.Label(page, textvariable=self.note, bg=BG, fg=WARN, font=FONT_SMALL, wraplength=420, justify="left").grid(row=5, column=0, columnspan=2, sticky="w")
+        ttk.Button(page, text="清除密钥", style="Ghost.TButton", command=self.clear_key).grid(row=6, column=0, columnspan=2, sticky="w", pady=(8, 0))
+
+    def _tab_account(self, tabs: ttk.Notebook) -> None:
+        page = self._page(tabs, "账号")
+        self._caption(page, 0, "当前用户")
+        tk.Label(page, text=self.app.user_name, bg=BG, fg=FG, font=FONT, anchor="w").grid(row=0, column=1, sticky="w", pady=5)
+        self._hint(page, 1, "退出登录后可以用另一个 Windows 用户重新登记，账号和便利贴各自独立保存。")
+        ttk.Button(page, text="退出登录", style="Ghost.TButton", command=self._logout).grid(row=2, column=0, columnspan=2, sticky="w")
+
+    def _on_skin(self, _event=None) -> None:
+        key = self._skin_by_label.get(self.skin_var.get())
+        if key:
+            self.app.apply_skin(key)
+
+    def _on_size(self, _event=None) -> None:
+        try:
+            size = int(self.size_var.get())
+        except ValueError:
+            return
+        self.app.apply_text_style(self.app.store.text_family(), size)
+
+    def _on_ball_style(self, _event=None) -> None:
+        style = "fish" if self.ball_style_var.get() == "鱼" else "bar"
+        self.app.store.set_ball_style(style)
+        self.app.apply_ball_style()
+
+    def _on_fish_size(self, _event=None) -> None:
+        try:
+            width = int(self.fish_size_var.get())
+        except ValueError:
+            return
+        self.app.store.set_fish_width(width)
+        self.app.apply_ball_style()
+
+    def _on_lang(self, _event=None) -> None:
+        key = self._lang_by_label.get(self.lang_var.get())
+        if key:
+            self.app.apply_language(key)
+            self.title(i18n.tr("设置"))
+
+    def _logout(self) -> None:
+        if messagebox.askyesno("退出登录", "要退出当前用户吗？", parent=self):
+            self.destroy()
+            self.app.logout()
 
     def _row(self, parent, row: int, caption: str, variable: tk.StringVar, show: str = "") -> tk.Entry:
         tk.Label(parent, text=caption, bg=BG, fg=FG, font=FONT, width=10, anchor="e").grid(row=row, column=0, sticky="e", padx=(0, 8), pady=5)
         entry = tk.Entry(parent, textvariable=variable, show=show, bg=PANEL, fg=FG, insertbackground=FG, relief="flat", font=FONT, highlightthickness=1, highlightbackground=LINE, highlightcolor=ACCENT)
         entry.grid(row=row, column=1, sticky="ew", pady=5, ipady=4)
         return entry
+
+    def pick_bg(self) -> None:
+        path = filedialog.askopenfilename(
+            parent=self,
+            title="选择背景图片",
+            filetypes=[("图片", "*.png *.jpg *.jpeg *.bmp *.gif *.webp"), ("所有文件", "*.*")],
+        )
+        if path:
+            self.bg_var.set(path)
+
+    def clear_bg(self) -> None:
+        self.bg_var.set("")
 
     def toggle(self) -> None:
         self.key_entry.configure(show="" if self.show_var.get() else "*")
@@ -499,8 +1100,14 @@ class SettingsDialog(tk.Toplevel):
             set_token(token)
             self.token_var.set("")
             self.token_note.set("已经填过 Token（留空表示不修改）。")
+        proxy = self.proxy_var.get().strip()
+        self.app.store.set_proxy(proxy)
+        set_proxy(proxy)
+        fit = self._fit_by_label.get(self.fit_var.get(), "fill")
+        self.app.set_bg_image(self.bg_var.get().strip(), fit)
         self.key_var.set("")
         self.note.set("已保存。")
+        self.destroy()
 
     def clear_key(self) -> None:
         self.app.store.set_api(self.base_var.get(), self.model_var.get(), None, clear_key=True)
@@ -1021,6 +1628,7 @@ class App(tk.Tk):
         super().__init__()
         self.store = store or Store()
         set_token(self.store.github_token())
+        set_proxy(self.store.proxy())
         self.user_name = user_name
         self.restart_login = False
         palette.use(self.store.skin())
@@ -1066,6 +1674,9 @@ class App(tk.Tk):
         self.ask_var = tk.StringVar()
         self.stat_vars = {key: tk.StringVar(value="0") for key, *_rest in BRIEF}
         self.always_on_top = bool(self.store.data.get("always_on_top"))
+        self.wallpaper = Wallpaper()
+        if not self.wallpaper.load(self.store.bg_image(), self.store.bg_fit()):
+            self.store.set_bg_image("")
         self.title(self._window_title())
         self.configure(bg=BG)
         self.minsize(1040, 640)
@@ -1264,6 +1875,26 @@ class App(tk.Tk):
         finally:
             menu.grab_release()
 
+    def apply_ball_style(self) -> None:
+        if not hasattr(self, "ball") or not self.ball.winfo_exists():
+            return
+        if not self.ball.winfo_viewable():
+            return
+        if self.store.ball_style() == "fish" and self.ball.fish.ready:
+            self.ball._start_fish(self.ball._action or self.ball.fish.pick_idle())
+        else:
+            self.ball._back_to_numbers()
+
+    def set_bg_image(self, path: str, mode: str | None = None) -> None:
+        fit = mode or self.store.bg_fit()
+        ok = self.wallpaper.load(path, fit)
+        self.store.set_bg_image(self.wallpaper.path if ok else "")
+        self.store.set_bg_fit(fit)
+        if hasattr(self, "ball") and self.ball.winfo_exists():
+            self.ball.render(*self.ball_numbers())
+        if hasattr(self, "plan_board"):
+            self.plan_board._paint_backdrop()
+
     def apply_skin(self, name: str) -> None:
         self.store.set_skin(name)
         palette.use(name)
@@ -1274,6 +1905,8 @@ class App(tk.Tk):
         self._style_panes()
         self._recolor_tags()
         self.redraw()
+        if hasattr(self, "ball") and self.ball.winfo_exists():
+            self.ball.render(*self.ball_numbers())
         if hasattr(self, "plan_board"):
             self.plan_board.reload()
 
@@ -1338,11 +1971,7 @@ class App(tk.Tk):
         self.hide_done = tk.BooleanVar(value=bool(self.store.data.get("hide_done_jobs")))
         self.hide_bad = tk.BooleanVar(value=bool(self.store.data.get("hide_bad_jobs")))
         self.update_btn = ttk.Button(nav, text="检查更新", style="Ghost.TButton", command=self.check_updates)
-        nav.add(self.update_btn)
-        nav.add(ttk.Button(nav, text="文字", style="Ghost.TButton", command=self.open_text_style))
-        nav.add(ttk.Button(nav, text="语言", style="Ghost.TButton", command=self.open_language_menu))
-        nav.add(ttk.Button(nav, text="皮肤", style="Ghost.TButton", command=self.open_skin_menu))
-        nav.add(ttk.Button(nav, text="退出登录", style="Ghost.TButton", command=self.logout))
+        nav.add(ttk.Button(nav, text="设置", style="Ghost.TButton", command=self.open_settings))
 
         tab_row = ttk.Frame(outer, style="App.TFrame")
         self.tab_row = tab_row
@@ -1896,9 +2525,9 @@ class App(tk.Tk):
             self.store.save()
         except Exception:
             pass
-        run, wait, done = self.ball_numbers()
+        run, wait, done, bad = self.ball_numbers()
         self.withdraw()
-        self.ball.show(run, wait, done)
+        self.ball.show(run, wait, done, bad)
     def restore_from_ball(self) -> None:
         if not self._in_ball:
             try:
@@ -1921,9 +2550,31 @@ class App(tk.Tk):
         except tk.TclError:
             pass
 
-    def ball_numbers(self) -> tuple[int, int, int]:
-        run, wait, done, _bad = self._counts_for(None)
-        return run, wait, done
+    def ball_numbers(self) -> tuple[int, int, int, int]:
+        run, wait, done, bad = self._counts_for(None)
+        return run, wait, done, bad
+
+    def ball_gossip(self) -> str:
+        """A short proactive line for the pet, based on what is happening."""
+        run, wait, done, bad = self.ball_numbers()
+        hour = datetime.now().hour
+        options: list[str] = []
+        if run:
+            options.append(i18n.tr(f"还有 {run} 个在跑～"))
+        if wait:
+            options.append(i18n.tr(f"{wait} 个在排队，别急～"))
+        if not run and not wait:
+            options.append(i18n.tr("都跑完啦，休息一下～"))
+        if hour < 11:
+            options.append(i18n.tr("早上好！"))
+        elif hour >= 22:
+            options.append(i18n.tr("很晚了，早点休息～"))
+        return random.choice(options) if options else ""
+
+    def set_pet_skin(self, name: str) -> None:
+        self.store.set_pet_skin(name)
+        if hasattr(self, "ball") and self.ball.winfo_exists():
+            self.ball.reload_art()
 
     def ball_detail(self) -> str:
         run, wait, done, bad = self._counts_for(None)
@@ -2240,6 +2891,13 @@ class App(tk.Tk):
     def _announce(self, jobs: list[Job]) -> None:
         if not self.alive or not jobs:
             return
+        done = sum(1 for job in jobs if job_bucket(job) == "done")
+        bad = sum(1 for job in jobs if job_bucket(job) == "bad")
+        if hasattr(self, "ball") and self._in_ball:
+            if done:
+                self.ball.celebrate("done", done)
+            elif bad:
+                self.ball.celebrate("bad", bad)
         DonePopup(self, jobs)
 
     def _update_banner(self) -> None:
@@ -2442,8 +3100,8 @@ class App(tk.Tk):
         self._paint_top(not scoped, tops)
         self._show_empty(not scoped and not tops)
         if self._in_ball:
-            run, wait, done = self.ball_numbers()
-            self.ball.render(run, wait, done)
+            run, wait, done, bad = self.ball_numbers()
+            self.ball.render(run, wait, done, bad)
         self._paint_later()
 
     def _fill_brief(self, jobs: list[Job]) -> None:
@@ -3014,7 +3672,56 @@ def _single_instance() -> bool:
     return True
 
 
+def _ball_selftest() -> None:
+    """Diagnostic used by the packaged build: collapse to the ball and write a report."""
+    report_path = Path(os.environ.get("TEMP", ".")) / "jobdesk_balltest.txt"
+    lines: list[str] = []
+
+    def log(text: str) -> None:
+        lines.append(text)
+
+    def dump() -> None:
+        report_path.write_text("\n".join(lines), encoding="utf-8")
+
+    try:
+        name = last_user_name()
+        store = Store(user_folder(name))
+        window = App(store=store, user_name=name)
+
+        def on_error(exc, val, tb) -> None:
+            log("TK-EXC: " + "".join(traceback.format_exception(exc, val, tb)))
+
+        window.report_callback_exception = on_error
+
+        def collapse() -> None:
+            try:
+                window.minimize_to_ball()
+                log("collapsed ok")
+            except Exception:
+                log("COLLAPSE-EXC:\n" + traceback.format_exc())
+
+        def report() -> None:
+            ball = getattr(window, "ball", None)
+            if ball is not None:
+                log(f"fish.ready={ball.fish.ready} actions={len(ball.fish.actions)} folder={ball.fish.folder}")
+                log(f"mode={ball._mode} size={ball._win_w}x{ball._win_h} mapped={ball.winfo_ismapped()} viewable={ball.winfo_viewable()}")
+                log(f"pos={ball.winfo_x()},{ball.winfo_y()} items={len(ball.canvas.find_all())}")
+                log(f"action={ball._action} bbox={ball._fish_bbox} photo={ball._photo is not None}")
+            dump()
+            window.destroy()
+
+        window.after(700, collapse)
+        window.after(4000, report)
+        window.mainloop()
+    except Exception:
+        log("FATAL:\n" + traceback.format_exc())
+    dump()
+
+
 def main() -> None:
+    if "--ball-selftest" in sys.argv:
+        _ball_selftest()
+        return
     try:
         if not _single_instance():
             ctypes.windll.user32.MessageBoxW(

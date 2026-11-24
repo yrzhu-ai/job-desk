@@ -5,6 +5,26 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.20] - 2026-11-24
+
+### Added
+- **Desktop pet in the floating ball.** The ball now plays the 106 animations of the
+  dsh-pet character (640x360 VP9-alpha video decoded with PyAV), keeps playing after
+  each clip and never repeats the same one twice in a row.
+- Ball menu: 打开 / 互动 / 随机动作 (toggle) / 动作列表… / 显示数字 / 立即刷新 / 退出.
+  The action list opens next to the ball and is searchable.
+- Single click plays a reaction, double click opens the main window.
+- "悬浮球" and "鱼的大小" options in Settings (fish or numbers only; 96/120/160).
+- Progress bar (running / queued / done / failed) is still available as a strip below
+  the pet, or as the whole ball when the pet is turned off.
+
+### Changed
+- Update checks now use the Windows proxy, with an optional manual proxy in Settings.
+- Settings became a tabbed window (外观 / 网络与更新 / DeepSeek / 账号) and every rarely
+  used button moved into it; the toolbar keeps only the frequent actions.
+- Custom background image with Windows-style fit modes (fill / fit / stretch / tile /
+  center / span) on the planner board and the ball.
+
 ## [1.0.19] - 2026-11-23
 
 ### Added

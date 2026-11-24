@@ -419,6 +419,8 @@ class PlanBoard(tk.Frame):
         scroll.grid(row=0, column=1, sticky="ns")
         self.note_canvas.configure(yscrollcommand=scroll.set)
         self.note_canvas.bind("<MouseWheel>", lambda event: self.note_canvas.yview_scroll(int(-event.delta / 120), "units"))
+        self._backdrop = None
+        self.note_canvas.bind("<Configure>", lambda _event: self._paint_backdrop())
         quick = tk.Frame(editor, bg=CARD)
         quick.grid(row=2, column=0, sticky="ew")
         quick_entry = tk.Entry(quick, textvariable=self.quick_var, bg=PANEL, fg=FG, insertbackground=FG, relief="flat", font=FONT, highlightthickness=1, highlightbackground=LINE, highlightcolor=ACCENT)
@@ -673,11 +675,28 @@ class PlanBoard(tk.Frame):
             return self._plans_for_fold(key, plans)
         return self._plans_on(plans, self.selected)
 
+    def _paint_backdrop(self, *_args) -> None:
+        """Tile the user background image behind the notes."""
+        wallpaper = getattr(self.app, "wallpaper", None)
+        if wallpaper is None or not wallpaper.ready:
+            return
+        canvas = self.note_canvas
+        canvas.delete("backdrop")
+        width = max(canvas.winfo_width(), 240)
+        height = max(canvas.winfo_height(), 240)
+        photo = wallpaper.tile(canvas, width, height, CARD, 0.20)
+        if photo is None:
+            return
+        self._backdrop = photo
+        canvas.create_image(0, 0, image=photo, anchor="nw", tags="backdrop")
+        canvas.tag_lower("backdrop")
+
     def _paint_day_tasks(self, plans: list[dict]) -> None:
         yview = self.note_canvas.yview()
         for child in self.note_canvas.winfo_children():
             child.destroy()
         self.note_canvas.delete("all")
+        self._paint_backdrop()
         items = self._filtered(plans)
         if not items:
             empty = {

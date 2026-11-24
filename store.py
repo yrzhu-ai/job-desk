@@ -706,6 +706,54 @@ class Store:
             self.data.pop("github_token", None)
         self.save()
 
+    def proxy(self) -> str:
+        return str(self.data.get("proxy") or "").strip()
+
+    def set_proxy(self, proxy: str) -> None:
+        self.data["proxy"] = str(proxy or "").strip()
+        self.save()
+
+    def pet_skin(self) -> str:
+        return str(self.data.get("pet_skin") or "").strip()
+
+    def set_pet_skin(self, name: str) -> None:
+        self.data["pet_skin"] = str(name or "").strip()
+        self.save()
+
+    def bg_image(self) -> str:
+        return str(self.data.get("bg_image") or "").strip()
+
+    def set_bg_image(self, path: str) -> None:
+        self.data["bg_image"] = str(path or "").strip()
+        self.save()
+
+    def bg_fit(self) -> str:
+        value = str(self.data.get("bg_fit") or "fill")
+        return value if value in {"fill", "fit", "stretch", "tile", "center", "span"} else "fill"
+
+    def set_bg_fit(self, mode: str) -> None:
+        self.data["bg_fit"] = mode if mode in {"fill", "fit", "stretch", "tile", "center", "span"} else "fill"
+        self.save()
+
+    def ball_style(self) -> str:
+        value = str(self.data.get("ball_style") or "fish")
+        return value if value in {"fish", "bar"} else "fish"
+
+    def set_ball_style(self, style: str) -> None:
+        self.data["ball_style"] = style if style in {"fish", "bar"} else "fish"
+        self.save()
+
+    def fish_width(self) -> int:
+        try:
+            value = int(self.data.get("fish_width") or 160)
+        except (TypeError, ValueError):
+            value = 160
+        return max(80, min(value, 160))
+
+    def set_fish_width(self, width: int) -> None:
+        self.data["fish_width"] = max(80, min(int(width), 160))
+        self.save()
+
     def set_plan_nodes(self, plan_id: str, title: str, nodes: list[dict]) -> None:
         now = datetime.now().isoformat(timespec="minutes")
         for item in self.plans():

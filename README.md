@@ -140,3 +140,7 @@ user-visible effect; screenshots help.
 ## License
 
 [MIT](LICENSE) © 2026 yrzhu-ai
+
+The pet animations under `pets/fish/` come from the
+[dsh-pet](https://github.com/TuWeiZhi/dsh-pet) project (MIT code; its artwork is
+free for non-commercial use). This app is free and does not charge for it.
