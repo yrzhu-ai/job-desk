@@ -64,7 +64,7 @@ WARN = "#f2b544"
 BAD = "#ff6d7d"
 LINE = "#313c52"
 HEADING = "#2a384c"
-VERSION = "1.0.20"
+VERSION = "1.0.21"
 FONT = ("Microsoft YaHei UI", 10)
 FONT_SMALL = ("Microsoft YaHei UI", 9)
 FONT_TITLE = ("Microsoft YaHei UI", 18, "bold")
@@ -930,9 +930,8 @@ class SettingsDialog(tk.Toplevel):
         tabs = ttk.Notebook(self)
         tabs.pack(fill="both", expand=True, padx=14, pady=(14, 6))
         self._tab_look(tabs)
-        self._tab_net(tabs)
-        self._tab_deepseek(tabs)
         self._tab_account(tabs)
+        self._tab_advanced(tabs)
 
         bar = tk.Frame(self, bg=BG)
         bar.pack(fill="x", padx=16, pady=(0, 14))
@@ -990,6 +989,25 @@ class SettingsDialog(tk.Toplevel):
         fish_size = ttk.Combobox(page, state="readonly", textvariable=self.fish_size_var, values=["96", "120", "160"])
         fish_size.grid(row=8, column=1, sticky="ew", pady=5)
         fish_size.bind("<<ComboboxSelected>>", self._on_fish_size)
+
+    def _tab_advanced(self, tabs: ttk.Notebook) -> None:
+        page = self._page(tabs, "高级")
+        tk.Label(page, text="这些选项一般不用改，出问题时再动。", bg=BG, fg=MUTED, font=FONT_SMALL, anchor="w").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+        self._caption(page, 1, "代理")
+        proxy = tk.Entry(page, textvariable=self.proxy_var, bg=PANEL, fg=FG, insertbackground=FG, relief="flat", font=FONT, highlightthickness=1, highlightbackground=LINE, highlightcolor=ACCENT)
+        proxy.grid(row=1, column=1, sticky="ew", pady=5, ipady=4)
+        self._hint(page, 2, "可选。例如 http://127.0.0.1:7897；系统代理开着时会自动用系统的。")
+        self._caption(page, 3, "GitHub Token")
+        entry = tk.Entry(page, textvariable=self.token_var, show="*", bg=PANEL, fg=FG, insertbackground=FG, relief="flat", font=FONT, highlightthickness=1, highlightbackground=LINE, highlightcolor=ACCENT)
+        entry.grid(row=3, column=1, sticky="ew", pady=5, ipady=4)
+        self._hint(page, 4, "可选。只在更新检查被限流时才有用（60 次/小时 → 5000 次/小时）。留空表示不修改。")
+        tk.Label(page, textvariable=self.token_note, bg=BG, fg=MUTED, font=FONT_SMALL, wraplength=460, justify="left").grid(row=5, column=0, columnspan=2, sticky="w", pady=(0, 8))
+        self._row(page, 6, "接口地址", self.base_var)
+        self._row(page, 7, "模型", self.model_var)
+        self.key_entry = self._row(page, 8, "API Key", self.key_var, show="*")
+        tk.Checkbutton(page, text="显示密钥", variable=self.show_var, command=self.toggle, bg=BG, fg=FG, selectcolor=PANEL, activebackground=BG, activeforeground=FG, font=FONT_SMALL).grid(row=9, column=1, sticky="w")
+        tk.Label(page, textvariable=self.note, bg=BG, fg=WARN, font=FONT_SMALL, wraplength=420, justify="left").grid(row=10, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        ttk.Button(page, text="清除密钥", style="Ghost.TButton", command=self.clear_key).grid(row=11, column=0, columnspan=2, sticky="w", pady=(8, 0))
 
     def _tab_net(self, tabs: ttk.Notebook) -> None:
         page = self._page(tabs, "网络与更新")
@@ -2417,6 +2435,11 @@ class App(tk.Tk):
             save_update_url(typed)
         self._updating = True
         self.store.touch_update_check()
+        try:
+            if hasattr(self, "update_btn"):
+                self.update_btn.configure(text="检查中…")
+        except tk.TclError:
+            pass
 
         def work() -> None:
             found = None
@@ -2435,9 +2458,18 @@ class App(tk.Tk):
         self._updating = False
         if not self.winfo_exists():
             return
+        page = "https://github.com/yrzhu-ai/job-desk/releases/latest"
+        try:
+            if hasattr(self, "update_btn"):
+                self.update_btn.configure(text=i18n.tr("检查更新"))
+        except tk.TclError:
+            pass
         if error:
             if not silent:
-                tell(self, "更新", error)
+                if messagebox.askyesno("检查更新", f"{error}\n\n要打开下载页面自己下载吗？\n{page}", parent=self):
+                    import webbrowser
+
+                    webbrowser.open(page)
             return
         if found is None:
             try:
