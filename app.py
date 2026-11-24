@@ -8,6 +8,8 @@ import os
 import queue
 import random
 import re
+import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -64,7 +66,7 @@ WARN = "#f2b544"
 BAD = "#ff6d7d"
 LINE = "#313c52"
 HEADING = "#2a384c"
-VERSION = "1.0.22"
+VERSION = "1.0.20"
 FONT = ("Microsoft YaHei UI", 10)
 FONT_SMALL = ("Microsoft YaHei UI", 9)
 FONT_TITLE = ("Microsoft YaHei UI", 18, "bold")
@@ -993,21 +995,13 @@ class SettingsDialog(tk.Toplevel):
     def _tab_advanced(self, tabs: ttk.Notebook) -> None:
         page = self._page(tabs, "高级")
         tk.Label(page, text="这些选项一般不用改，出问题时再动。", bg=BG, fg=MUTED, font=FONT_SMALL, anchor="w").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
-        self._caption(page, 1, "代理")
-        proxy = tk.Entry(page, textvariable=self.proxy_var, bg=PANEL, fg=FG, insertbackground=FG, relief="flat", font=FONT, highlightthickness=1, highlightbackground=LINE, highlightcolor=ACCENT)
-        proxy.grid(row=1, column=1, sticky="ew", pady=5, ipady=4)
-        self._hint(page, 2, "可选。例如 http://127.0.0.1:7897；系统代理开着时会自动用系统的。")
-        self._caption(page, 3, "GitHub Token")
-        entry = tk.Entry(page, textvariable=self.token_var, show="*", bg=PANEL, fg=FG, insertbackground=FG, relief="flat", font=FONT, highlightthickness=1, highlightbackground=LINE, highlightcolor=ACCENT)
-        entry.grid(row=3, column=1, sticky="ew", pady=5, ipady=4)
-        self._hint(page, 4, "可选。只在更新检查被限流时才有用（60 次/小时 → 5000 次/小时）。留空表示不修改。")
-        tk.Label(page, textvariable=self.token_note, bg=BG, fg=MUTED, font=FONT_SMALL, wraplength=460, justify="left").grid(row=5, column=0, columnspan=2, sticky="w", pady=(0, 8))
-        self._row(page, 6, "接口地址", self.base_var)
-        self._row(page, 7, "模型", self.model_var)
-        self.key_entry = self._row(page, 8, "API Key", self.key_var, show="*")
-        tk.Checkbutton(page, text="显示密钥", variable=self.show_var, command=self.toggle, bg=BG, fg=FG, selectcolor=PANEL, activebackground=BG, activeforeground=FG, font=FONT_SMALL).grid(row=9, column=1, sticky="w")
-        tk.Label(page, textvariable=self.note, bg=BG, fg=WARN, font=FONT_SMALL, wraplength=420, justify="left").grid(row=10, column=0, columnspan=2, sticky="w", pady=(6, 0))
-        ttk.Button(page, text="清除密钥", style="Ghost.TButton", command=self.clear_key).grid(row=11, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        ttk.Button(page, text="检查更新", style="Accent.TButton", command=self._check_updates).grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 12))
+        self._row(page, 2, "接口地址", self.base_var)
+        self._row(page, 3, "模型", self.model_var)
+        self.key_entry = self._row(page, 4, "API Key", self.key_var, show="*")
+        tk.Checkbutton(page, text="显示密钥", variable=self.show_var, command=self.toggle, bg=BG, fg=FG, selectcolor=PANEL, activebackground=BG, activeforeground=FG, font=FONT_SMALL).grid(row=5, column=1, sticky="w")
+        tk.Label(page, textvariable=self.note, bg=BG, fg=WARN, font=FONT_SMALL, wraplength=420, justify="left").grid(row=6, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        ttk.Button(page, text="清除密钥", style="Ghost.TButton", command=self.clear_key).grid(row=7, column=0, columnspan=2, sticky="w", pady=(8, 0))
 
     def _tab_net(self, tabs: ttk.Notebook) -> None:
         page = self._page(tabs, "网络与更新")
@@ -1050,6 +1044,10 @@ class SettingsDialog(tk.Toplevel):
         except ValueError:
             return
         self.app.apply_text_style(self.app.store.text_family(), size)
+
+    def _check_updates(self) -> None:
+        self.destroy()
+        self.app.after(30, self.app.check_updates)
 
     def _on_ball_style(self, _event=None) -> None:
         style = "fish" if self.ball_style_var.get() == "鱼" else "bar"
@@ -1553,6 +1551,23 @@ class AccountDialog(tk.Toplevel):
         messagebox.showinfo("测试连接", "\n".join(lines), parent=self)
 
 
+def _plain_notes(text: str) -> str:
+    """Turn GitHub release markdown into something readable in a plain Text box."""
+    value = str(text or "")
+    value = re.sub(r"\*\*(.+?)\*\*", r"\1", value)
+    value = re.sub(r"`([^`]+)`", r"\1", value)
+    value = re.sub(r"^\s*#+\s*", "", value, flags=re.MULTILINE)
+    lines = []
+    for line in value.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if "Full Changelog" in line or "/compare/" in line:
+            continue
+        lines.append(line)
+    return "\n".join(lines).strip()
+
+
 class UpdateDialog(tk.Toplevel):
     """Shows the new version and what changed, then hands off to the downloader."""
 
@@ -1571,7 +1586,8 @@ class UpdateDialog(tk.Toplevel):
         tk.Label(self, text="这一版改了什么", bg=BG, fg=FG, font=FONT).pack(anchor="w", padx=18)
         self.notes = tk.Text(self, height=10, wrap="word", bg=PANEL, fg=FG, relief="flat", font=FONT_SMALL, highlightthickness=1, highlightbackground=LINE, padx=10, pady=8)
         self.notes.pack(fill="both", expand=True, padx=18, pady=(4, 10))
-        self.notes.insert("1.0", (offer.notes or "这个版本没有写更新说明。").strip()[:4000])
+        notes = _plain_notes(offer.notes) or "这一版主要是细节修复，直接点「现在更新」即可。"
+        self.notes.insert("1.0", notes[:4000])
         self.notes.configure(state="disabled")
         bar = tk.Frame(self, bg=BG)
         bar.pack(fill="x", padx=18, pady=(0, 14))
@@ -1580,6 +1596,9 @@ class UpdateDialog(tk.Toplevel):
         ttk.Button(bar, text="跳过这个版本", style="Ghost.TButton", command=self.skip).pack(side="right")
         center_on(self, app, 560, 420)
         self.deiconify()
+        self.attributes("-topmost", True)
+        self.lift()
+        self.focus_force()
         self.grab_set()
 
     def install(self) -> None:
@@ -2416,7 +2435,10 @@ class App(tk.Tk):
 
     def check_updates(self, silent: bool = False) -> None:
         if getattr(self, "_updating", False):
-            return
+            if time.monotonic() - getattr(self, "_update_started", 0.0) < 20:
+                return
+            self._updating = False
+        self._update_started = time.monotonic()
         if not silent and not update_url():
             from tkinter import simpledialog
 
@@ -2477,7 +2499,7 @@ class App(tk.Tk):
             except tk.TclError:
                 pass
             if not silent:
-                tell(self, "更新", f"已经是最新版本 {VERSION}。")
+                messagebox.showinfo("检查更新", f"已经是最新版本 {VERSION}。", parent=self)
             return
         if silent and found.version == self.store.update_skipped():
             return
@@ -2489,17 +2511,56 @@ class App(tk.Tk):
 
     def _start_download(self, found) -> None:
         self._updating = True
+        win = tk.Toplevel(self)
+        win.title("正在下载")
+        win.configure(bg=BG)
+        win.transient(self)
+        win.resizable(False, False)
+        tk.Label(win, text=f"正在下载 {found.version}…", bg=BG, fg=FG, font=FONT).pack(padx=24, pady=(18, 8))
+        bar = ttk.Progressbar(win, mode="determinate", length=300, maximum=100, value=0)
+        bar.pack(padx=24, pady=(0, 6))
+        status = tk.Label(win, text="正在连接…", bg=BG, fg=MUTED, font=FONT_SMALL)
+        status.pack(padx=24, pady=(0, 14))
+
+        def on_progress(done: int, total: int) -> None:
+            def update() -> None:
+                if not win.winfo_exists():
+                    return
+                if total > 0:
+                    percent = min(100.0, done * 100.0 / total)
+                    bar.configure(value=percent)
+                    status.configure(text=f"{percent:.0f}%    {done / 1048576:.1f} / {total / 1048576:.1f} MB")
+                else:
+                    status.configure(text=f"{done / 1048576:.1f} MB")
+
+            self.after(0, update)
+
+        try:
+            center_on(win, self, 380, 160)
+        except Exception:
+            win.geometry("380x160")
+        win.deiconify()
+        win.lift()
+        win.focus_force()
+
+        def close() -> None:
+            try:
+                win.grab_release()
+                win.destroy()
+            except tk.TclError:
+                pass
 
         def work() -> None:
             path = None
             problem = ""
             try:
-                path = download_release(found.url, found.sha256, found.size)
+                path = download_release(found.url, found.sha256, found.size, progress=on_progress)
             except UpdateError as exc:
                 problem = str(exc)
             except Exception as exc:
                 problem = f"下载没有完成：{exc}"
-            self.after(0, lambda item=path, text=problem: self._finish_download(item, text))
+            self.after(0, close)
+            self.after(50, lambda item=path, text=problem: self._finish_download(item, text))
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -2510,12 +2571,36 @@ class App(tk.Tk):
         if problem or path is None:
             tell(self, "更新", problem or "下载没有完成。")
             return
-        try:
-            launch_swap(path, os.getpid())
-        except UpdateError as exc:
-            tell(self, "更新", str(exc))
+        if self._swap_inplace(path):
+            self.on_close()
             return
-        self.on_close()
+        tell(self, "更新", f"新版本已下载到：\n{path}\n\n但当前目录不可写，请手动复制替换。")
+
+    def _swap_inplace(self, downloaded) -> bool:
+        """Rename this exe aside, copy the new one into its place, start it."""
+        target = Path(sys.executable)
+        old = target.with_name(target.stem + ".old.exe")
+        try:
+            if old.exists():
+                old.unlink()
+            target.rename(old)
+            shutil.copy2(downloaded, target)
+        except OSError:
+            try:
+                if not target.exists() and old.exists():
+                    old.rename(target)
+            except OSError:
+                pass
+            return False
+        try:
+            downloaded.unlink()
+        except OSError:
+            pass
+        try:
+            subprocess.Popen([str(target)], close_fds=True)
+        except OSError:
+            return False
+        return True
 
     def on_close(self) -> None:
         self.alive = False
