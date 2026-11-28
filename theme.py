@@ -12,6 +12,31 @@ except Exception:
     ImageTk = None
 
 SKINS = {
+    "puppy": {
+        "label": "线条小狗",
+        "bg": "#fff4dc",
+        "panel": "#ffffff",
+        "card": "#fffdf6",
+        "fg": "#171717",
+        "muted": "#7d7365",
+        "accent": "#171717",
+        "line": "#171717",
+        "ok": "#1f7a4d",
+        "warn": "#a87400",
+        "bad": "#c0392b",
+        "heading": "#ffe9b0",
+        "on_accent": "#fff8e7",
+        "sash": "#e2d5b8",
+        "run_bg": "#eefbef",
+        "run_fg": "#1f7a4d",
+        "wait_bg": "#fff1c9",
+        "wait_fg": "#7a5a00",
+        "done_bg": "#f7f1e3",
+        "done_fg": "#3a352b",
+        "bad_bg": "#ffeceb",
+        "bad_fg": "#b03a2e",
+        "pick": "#ffd84d",
+    },
     "night": {
         "label": "深夜",
         "bg": "#10141c",
