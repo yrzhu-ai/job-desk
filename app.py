@@ -37,6 +37,7 @@ from jobs import (
     job_bucket,
     job_key,
     kind,
+    install_jd,
     next_buckets,
     one_line,
     query_account,
@@ -49,7 +50,9 @@ from store import Store, _check_login, check_user, data_dir, last_user_name, leg
 from theme import SKINS, TEXT_CHOICES, TEXT_SIZES, apply_text, palette, restyle, sync_modules, text_look
 from updater import UpdateError, download_release, launch_swap, look_for_update, save_update_url, set_proxy, set_token, update_url
 import i18n
+from tray import Tray
 from wallpaper import Wallpaper
+from notify import send as send_notification
 from fishvideo import FishVideo
 from winsecret import SecretError
 
@@ -66,7 +69,7 @@ WARN = "#f2b544"
 BAD = "#ff6d7d"
 LINE = "#313c52"
 HEADING = "#2a384c"
-VERSION = "1.0.20"
+VERSION = "1.0.22"
 FONT = ("Microsoft YaHei UI", 10)
 FONT_SMALL = ("Microsoft YaHei UI", 9)
 FONT_TITLE = ("Microsoft YaHei UI", 18, "bold")
@@ -188,6 +191,11 @@ def _setup_gap(error: str) -> bool:
     return "还没有填写密码" in error or "主机或用户名是空的" in error
 
 
+_BUBBLE = None
+KEY_COLOR = "#010101"
+PX_PER_METRE = 400.0  # the pet is ~200 px tall, i.e. roughly half a metre
+
+
 class FloatBall(tk.Toplevel):
     """A small animated pet that also keeps the job counters visible."""
 
@@ -236,6 +244,16 @@ class FloatBall(tk.Toplevel):
         self._activity = time.monotonic()
         self._tick_job = None
         self._pending_click = None
+        self._samples: list[tuple[float, int, int]] = []
+        self._vx = 0.0
+        self._vy = 0.0
+        self._flying = False
+        self._phys_at = 0.0
+        self._peak = None
+        self._pat_job = None
+        self._patting = False
+        self._meter_win = None
+        self._meter_label = None
         self._gossip_at = time.monotonic() + random.uniform(60, 120)
         self.art = PetArt(self, find_skin(app.store.pet_skin()) or None)
         self.fish = FishVideo()
@@ -488,7 +506,7 @@ class FloatBall(tk.Toplevel):
         photo = None
         wallpaper = getattr(self.app, "wallpaper", None)
         if wallpaper is not None and wallpaper.ready:
-            photo = wallpaper.tile(self, width, height, base, 0.55 if text_mode else 0.30)
+            photo = wallpaper.tile(self, width, height, base, self.app.store.bg_alpha() + 0.05 if text_mode else self.app.store.bg_alpha())
         if photo is not None:
             self._backdrop = photo
             canvas.create_image(0, 0, image=photo, anchor="nw")
@@ -524,6 +542,13 @@ class FloatBall(tk.Toplevel):
         if not self.winfo_exists() or not self.winfo_viewable():
             return
         now = time.monotonic()
+        if self._flying:
+            self._step_physics(now)
+            try:
+                self._tick_job = self.after(16, self._tick)
+            except tk.TclError:
+                pass
+            return
         interval = 90
         if self._mode == "fish":
             step = 1.0 / max(self.fish.fps, 1)
@@ -598,6 +623,50 @@ class FloatBall(tk.Toplevel):
         self._wx = self.winfo_x()
         self._wy = self.winfo_y()
         self._moved = False
+        self._samples = [(time.monotonic(), self._wx, self._wy)]
+        self._flying = False
+        self._peak = None
+        self._hide_meters()
+        self._patting = False
+        self._pat_job = self.after(420, self._begin_pat)
+
+    def _begin_pat(self) -> None:
+        self._pat_job = None
+        if self._moved:
+            return
+        self._patting = True
+        self._reaction()
+        self._hearts()
+
+    def _hearts(self) -> None:
+        try:
+            width, height = self._win_w, self._win_h
+        except tk.TclError:
+            return
+        for index in range(5):
+            item = self.canvas.create_text(
+                30 + index * 22 + random.randint(-4, 4),
+                height - 40 - random.randint(0, 20),
+                text="♥",
+                fill=palette.bad,
+                font=("Segoe UI Symbol", 12),
+            )
+            self._float_heart(item, 0)
+
+    def _float_heart(self, item: int, step: int) -> None:
+        if not self.winfo_exists():
+            return
+        try:
+            self.canvas.move(item, 0, -2)
+        except tk.TclError:
+            return
+        if step >= 18:
+            try:
+                self.canvas.delete(item)
+            except tk.TclError:
+                pass
+            return
+        self.after(60, lambda: self._float_heart(item, step + 1))
 
     def _drag(self, event) -> None:
         dx = event.x_root - self._ox
@@ -605,16 +674,168 @@ class FloatBall(tk.Toplevel):
         if abs(dx) > 4 or abs(dy) > 4:
             self._moved = True
             self._hide_tip()
-        self.geometry(f"+{self._wx + dx}+{self._wy + dy}")
+        x, y = self._wx + dx, self._wy + dy
+        self.geometry(f"+{x}+{y}")
+        self._samples.append((time.monotonic(), x, y))
+        if len(self._samples) > 8:
+            del self._samples[0]
 
     def _up(self, _event) -> None:
+        if self._pat_job is not None:
+            try:
+                self.after_cancel(self._pat_job)
+            except tk.TclError:
+                pass
+            self._pat_job = None
+        if self._patting:
+            self._patting = False
+            return
         if self._moved:
+            now = time.monotonic()
+            recent = [item for item in self._samples if now - item[0] <= 0.15]
+            if len(recent) >= 2:
+                t0, x0, y0 = recent[0]
+                t1, x1, y1 = recent[-1]
+                span = max(t1 - t0, 0.01)
+                vx = (x1 - x0) / span
+                vy = (y1 - y0) / span
+                if (vx * vx + vy * vy) ** 0.5 > 650:
+                    speed = (vx * vx + vy * vy) ** 0.5
+                    limit = 1400.0 if self.app.store.throw_mode() == "toss" else 4000.0
+                    if speed > limit:
+                        vx *= limit / speed
+                        vy *= limit / speed
+                    self._vx, self._vy = vx, vy
+                    self._flying = True
+                    self._phys_at = now
+                    self._samples = []
+                    return
             self.app.store.data["ball_pos"] = [self.winfo_x(), self.winfo_y()]
             self.app.store.save()
             return
         if self._pending_click is not None:
             return
         self._pending_click = self.after(240, self._interact)
+
+    def _show_meters(self, pixels: int) -> None:
+        metres = pixels / PX_PER_METRE
+        text = f"{metres:.2f} 米" if metres < 10 else f"{metres:.1f} 米"
+        try:
+            if self._meter_win is None or not self._meter_win.winfo_exists():
+                self._meter_win = tk.Toplevel(self.app)
+                self._meter_win.overrideredirect(True)
+                self._meter_win.attributes("-topmost", True)
+                self._meter_win.configure(bg=KEY_COLOR)
+                try:
+                    self._meter_win.wm_attributes("-transparentcolor", KEY_COLOR)
+                except tk.TclError:
+                    pass
+                self._meter_label = tk.Label(
+                    self._meter_win,
+                    text="",
+                    bg=KEY_COLOR,
+                    fg=palette.warn,
+                    font=("Microsoft YaHei UI", 20, "bold"),
+                )
+                self._meter_label.pack()
+            self._meter_label.configure(text=text)
+            self._meter_win.update_idletasks()
+            width = max(self._meter_win.winfo_width(), 80)
+            x = self.winfo_x() + self._win_w // 2 - width // 2
+            x = max(4, min(x, self.winfo_screenwidth() - width - 4))
+            y = max(40, min(self.winfo_y() - 40, self.winfo_screenheight() // 2))
+            self._meter_win.geometry(f"+{int(x)}+{int(y)}")
+            self._meter_win.deiconify()
+            self._meter_win.lift()
+        except tk.TclError:
+            pass
+
+    def _hide_meters(self) -> None:
+        if self._meter_win is not None:
+            try:
+                self._meter_win.withdraw()
+            except tk.TclError:
+                pass
+
+    def _show_best(self, best: int) -> None:
+        self._show_meters(best)
+        if self._meter_label is not None:
+            try:
+                self._meter_label.configure(text=f"最高 {best / 50:.1f} 米")
+            except tk.TclError:
+                pass
+        self.after(2200, self._hide_meters)
+
+    def _set_throw_mode(self) -> None:
+        self.app.store.set_throw_mode(self._throw_var.get())
+
+    def _step_physics(self, now: float) -> None:
+        dt = min(max(now - self._phys_at, 0.008), 0.05)
+        self._phys_at = now
+        mode_now = self.app.store.throw_mode()
+        if mode_now == "toss":
+            gravity = 380.0          # ~7.6 m/s² with 50 px per metre
+            terminal = 480.0         # very light, high-drag toy
+            drag = gravity / (terminal * terminal)
+            speed = (self._vx * self._vx + self._vy * self._vy) ** 0.5
+            self._vy += gravity * dt
+            if speed > 1.0:
+                self._vx -= drag * speed * self._vx * dt
+                self._vy -= drag * speed * self._vy * dt
+        else:
+            self._vy += 2400.0 * dt
+        x = self.winfo_x() + self._vx * dt
+        y = self.winfo_y() + self._vy * dt
+        width, height = self._win_w, self._win_h
+        screen_w = self.winfo_screenwidth()
+        floor = self.winfo_screenheight() - height - 56
+        mode = self.app.store.throw_mode()
+        if self._peak is None or y < self._peak:
+            self._peak = y
+        if x < 0:
+            x = 0
+            self._vx = -self._vx * 0.62 if mode == "bounce" else 0.0
+        elif x > screen_w - width:
+            x = screen_w - width
+            self._vx = -self._vx * 0.62 if mode == "bounce" else 0.0
+        if y < 0:
+            if mode == "bounce":
+                y = 0
+                self._vy = -self._vy * 0.55
+            # toss mode: no ceiling, the pet may fly above the screen
+        elif y > floor:
+            y = floor
+            self._hide_meters()
+            if mode == "toss":
+                if abs(self._vy) > 60:
+                    self._vy = 0.0
+                self._vx *= 0.88
+            else:
+                if abs(self._vy) > 90:
+                    self._vy = -self._vy * 0.55
+                else:
+                    self._vy = 0.0
+                self._vx *= 0.86
+        try:
+            self.geometry(f"+{int(x)}+{int(y)}")
+        except tk.TclError:
+            self._flying = False
+            return
+        if mode == "toss" and self._peak is not None:
+            self._show_meters(int(max(0, floor - self._peak)))
+        if abs(self._vx) < 22 and abs(self._vy) < 40 and y >= floor - 1:
+            self._flying = False
+            if self._peak is not None and mode == "toss":
+                height_px = int(floor - self._peak)
+                if height_px > self.app.store.toss_best():
+                    self.app.store.set_toss_best(height_px)
+                self._hide_meters()
+            self._peak = None
+            try:
+                self.app.store.data["ball_pos"] = [int(x), int(y)]
+                self.app.store.save()
+            except Exception:
+                pass
 
     def _interact(self) -> None:
         self._pending_click = None
@@ -670,6 +891,15 @@ class FloatBall(tk.Toplevel):
         menu.add_command(label="打开", command=self._open_window)
         if self.fish.ready:
             menu.add_command(label="互动", command=self._reaction)
+            throw_menu = tk.Menu(menu, tearoff=0)
+            self._throw_var = tk.StringVar(value=self.app.store.throw_mode())
+            throw_menu.add_radiobutton(label="弹跳（撞墙反弹）", value="bounce", variable=self._throw_var, command=self._set_throw_mode)
+            throw_menu.add_radiobutton(label="上抛（一直往上飞）", value="toss", variable=self._throw_var, command=self._set_throw_mode)
+            best = self.app.store.toss_best()
+            if best:
+                throw_menu.add_separator()
+                throw_menu.add_command(label=f"最高纪录：{best / PX_PER_METRE:.2f} 米", state="disabled")
+            menu.add_cascade(label="抛掷方式", menu=throw_menu)
             menu.add_checkbutton(label="随机动作", variable=self._auto_var, command=self._toggle_auto)
             menu.add_command(label="动作列表…", command=self.open_actions)
             menu.add_checkbutton(label="显示数字", variable=self._counts_var, command=self.toggle_counts)
@@ -696,6 +926,93 @@ class FloatBall(tk.Toplevel):
     def _quit(self) -> None:
         if messagebox.askyesno("退出", "要退出作业看台吗？", parent=self):
             self.app.on_close()
+
+
+class CloseChoiceDialog(tk.Toplevel):
+    """Asked when the user clicks the window X: quit or hide to the ball."""
+
+    def __init__(self, app: "App") -> None:
+        super().__init__(app)
+        self.withdraw()
+        self.app = app
+        self.title("关闭作业看台")
+        self.configure(bg=BG)
+        self.resizable(False, False)
+        self.transient(app)
+        tk.Label(self, text="要关闭程序，还是收起到桌宠？", bg=BG, fg=FG, font=("Microsoft YaHei UI", 12, "bold")).pack(anchor="w", padx=20, pady=(16, 6))
+        tk.Label(self, text="收到桌宠后，双击桌宠就能重新打开；右键桌宠可以退出。", bg=BG, fg=MUTED, font=FONT_SMALL, wraplength=380, justify="left").pack(anchor="w", padx=20)
+        remember = tk.BooleanVar(value=False)
+        tk.Checkbutton(self, text="记住我的选择（以后不再询问）", variable=remember, bg=BG, fg=FG, selectcolor=PANEL, activebackground=BG, activeforeground=FG, font=FONT_SMALL).pack(anchor="w", padx=20, pady=(10, 0))
+        bar = tk.Frame(self, bg=BG)
+        bar.pack(fill="x", padx=20, pady=16)
+        ttk.Button(bar, text="收到托盘", style="Accent.TButton", command=lambda: self._pick("tray", remember)).pack(side="left")
+        ttk.Button(bar, text="收到桌宠", style="Ghost.TButton", command=lambda: self._pick("ball", remember)).pack(side="left", padx=8)
+        ttk.Button(bar, text="关闭程序", style="Ghost.TButton", command=lambda: self._pick("close", remember)).pack(side="left", padx=8)
+        ttk.Button(bar, text="取消", style="Ghost.TButton", command=self.destroy).pack(side="right")
+        center_on(self, app, 440, 220)
+        self.deiconify()
+        self.grab_set()
+
+    def _pick(self, action: str, remember: tk.BooleanVar) -> None:
+        self.destroy()
+        self.app.remember_close(action, bool(remember.get()))
+
+
+class ProcessWindow(tk.Toplevel):
+    """Lists nohup-style processes separately from scheduler jobs."""
+
+    def __init__(self, app: "App") -> None:
+        super().__init__(app)
+        self.app = app
+        self.title("进程任务（nohup）")
+        self.configure(bg=BG)
+        self.minsize(700, 380)
+        tk.Label(
+            self,
+            text="这些是服务器上你自己的进程（运行超过 1 分钟），不属于调度系统的作业。作业号就是 PID。",
+            bg=BG,
+            fg=MUTED,
+            font=FONT_SMALL,
+            anchor="w",
+            justify="left",
+            wraplength=660,
+        ).pack(fill="x", padx=14, pady=(12, 6))
+        frame = tk.Frame(self, bg=BG)
+        frame.pack(fill="both", expand=True, padx=14, pady=(0, 10))
+        columns = ("account", "pid", "elapsed", "mem", "name", "host")
+        self.tree = ttk.Treeview(frame, columns=columns, show="headings", height=14)
+        headings = {
+            "account": ("账号", 110),
+            "pid": ("PID", 80),
+            "elapsed": ("已运行", 110),
+            "mem": ("内存", 70),
+            "name": ("命令", 320),
+            "host": ("主机", 130),
+        }
+        for key, (title, width) in headings.items():
+            self.tree.heading(key, text=title)
+            self.tree.column(key, width=width, anchor="w", stretch=(key == "name"))
+        bar = ttk.Scrollbar(frame, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=bar.set)
+        self.tree.pack(side="left", fill="both", expand=True)
+        bar.pack(side="right", fill="y")
+        for job in getattr(app, "process_jobs", []):
+            self.tree.insert(
+                "",
+                "end",
+                values=(job.account_label, job.job_id, job.elapsed, job.memory, job.name, job.host),
+            )
+        bottom = tk.Frame(self, bg=BG)
+        bottom.pack(fill="x", padx=14, pady=(0, 12))
+        ttk.Button(bottom, text="刷新主界面", style="Accent.TButton", command=self._refresh).pack(side="left")
+        ttk.Button(bottom, text="关闭", style="Ghost.TButton", command=self.destroy).pack(side="right")
+        center_on(self, app, 820, 460)
+        self.deiconify()
+        self.lift()
+
+    def _refresh(self) -> None:
+        self.destroy()
+        self.app.refresh()
 
 
 class ActionListWindow(tk.Toplevel):
@@ -860,9 +1177,9 @@ class LaterWindow(tk.Toplevel):
         self.configure(bg=BG)
         self.minsize(420, 280)
         tk.Label(self, text="这些完成提醒先留着", bg=BG, fg=FG, font=("Microsoft YaHei UI", 14, "bold")).pack(anchor="w", padx=16, pady=(14, 6))
-        self.box = tk.Listbox(self, bg=CARD, fg=FG, selectbackground=ACCENT, selectforeground=palette.on_accent, relief="flat", highlightthickness=1, highlightbackground=LINE, activestyle="none", exportselection=False, font=FONT)
+        self.box = tk.Listbox(self, bg=CARD, fg=FG, selectbackground=ACCENT, selectforeground=palette.on_accent, relief="flat", highlightthickness=1, highlightbackground=LINE, activestyle="none", exportselection=False, selectmode="extended", font=FONT)
         self.box.pack(fill="both", expand=True, padx=16, pady=6)
-        self.jobs: list[Job] = []
+        self.entries: list[tuple[Job | None, dict]] = []
         bar = tk.Frame(self, bg=BG)
         bar.pack(fill="x", padx=16, pady=(0, 14))
         ttk.Button(bar, text="现在查看", style="Accent.TButton", command=self.view_selected).pack(side="left")
@@ -874,32 +1191,52 @@ class LaterWindow(tk.Toplevel):
         self.deiconify()
 
     def reload(self) -> None:
-        found, _missing = self.app.later_jobs()
-        self.jobs = found
+        found, missing = self.app.later_jobs()
+        self.entries: list[tuple[Job | None, dict]] = [(job, {}) for job in found] + [(None, item) for item in missing]
         self.box.delete(0, "end")
-        for job in found:
-            self.box.insert("end", f"{self.app.display_account(job)}    {job.name or job.job_id}    {job.job_id}")
-        if not found:
+        for job, item in self.entries:
+            if job is not None:
+                self.box.insert("end", f"{self.app.display_account(job)}    {job.name or job.job_id}    {job.job_id}")
+            else:
+                label = item.get("label") or "?"
+                name = item.get("name") or item.get("job_id") or ""
+                self.box.insert("end", f"{label}    {name}    {item.get('job_id')}（已不在列表里）")
+        if not self.entries:
             self.box.insert("end", "没有还在列表里的稍后任务。")
 
-    def _selected(self) -> Job | None:
+    def _selected(self) -> tuple[Job | None, dict] | None:
         picked = self.box.curselection()
-        if not picked or picked[0] >= len(self.jobs):
+        if not picked or picked[0] >= len(self.entries):
             return None
-        return self.jobs[picked[0]]
+        return self.entries[picked[0]]
 
     def view_selected(self) -> None:
-        job = self._selected()
+        picked = self._selected()
+        if picked is None:
+            return
+        job, item = picked
         if job is None:
+            messagebox.showinfo(
+                "稍后处理",
+                "这个任务已经不在当前列表里了（可能已结束、或超出了历史天数）。\n可以点「移除」把它从稍后列表删掉。",
+                parent=self,
+            )
             return
         self.app.show_job(job)
         self.reload()
 
     def drop_selected(self) -> None:
-        job = self._selected()
-        if job is None:
+        picked = self.box.curselection()
+        if not picked:
             return
-        self.app.drop_later(job)
+        for index in picked:
+            if index >= len(self.entries):
+                continue
+            job, item = self.entries[index]
+            if job is not None:
+                self.app.drop_later(job)
+            else:
+                self.app.drop_later_key(item.get("key") or "")
         self.reload()
 
 
@@ -919,6 +1256,8 @@ class SettingsDialog(tk.Toplevel):
         self.token_var = tk.StringVar()
         self.proxy_var = tk.StringVar(value=app.store.proxy())
         self.bg_var = tk.StringVar(value=app.store.bg_image())
+        self.webhook_var = tk.StringVar(value=app.store.notify_webhook())
+        self.notify_var = tk.BooleanVar(value=app.store.notify_enabled())
         self.fit_var = tk.StringVar(value=i18n.tr(dict(BG_FITS).get(app.store.bg_fit(), "填充")))
         self._fit_by_label = {i18n.tr(label): key for key, label in BG_FITS}
         self.skin_var = tk.StringVar(value=i18n.tr(SKINS[palette.name]["label"]))
@@ -981,15 +1320,20 @@ class SettingsDialog(tk.Toplevel):
         fit = ttk.Combobox(page, state="readonly", textvariable=self.fit_var, values=[i18n.tr(label) for _key, label in BG_FITS])
         fit.grid(row=5, column=1, sticky="ew", pady=5)
         self._hint(page, 6, "和 Windows 壁纸一样：填充铺满、适应完整显示、拉伸变形铺满、平铺重复、居中居中放置、跨区整块拉伸。")
-        self._caption(page, 7, "悬浮球")
+        self._caption(page, 7, "背景透明度")
+        self.alpha_var = tk.DoubleVar(value=self.app.store.bg_alpha() * 100)
+        alpha = ttk.Scale(page, from_=0, to=100, orient="horizontal", variable=self.alpha_var, command=self._on_alpha)
+        alpha.grid(row=7, column=1, sticky="ew", pady=5)
+        self._hint(page, 8, "0 = 完全看不到背景图，100 = 原图强度；拖动即时生效。")
+        self._caption(page, 9, "悬浮球")
         self.ball_style_var = tk.StringVar(value="鱼" if self.app.store.ball_style() == "fish" else "只显示数字")
         ball_style = ttk.Combobox(page, state="readonly", textvariable=self.ball_style_var, values=["鱼", "只显示数字"])
-        ball_style.grid(row=7, column=1, sticky="ew", pady=5)
+        ball_style.grid(row=9, column=1, sticky="ew", pady=5)
         ball_style.bind("<<ComboboxSelected>>", self._on_ball_style)
-        self._caption(page, 8, "鱼的大小")
+        self._caption(page, 10, "鱼的大小")
         self.fish_size_var = tk.StringVar(value=str(self.app.store.fish_width()))
         fish_size = ttk.Combobox(page, state="readonly", textvariable=self.fish_size_var, values=["96", "120", "160"])
-        fish_size.grid(row=8, column=1, sticky="ew", pady=5)
+        fish_size.grid(row=10, column=1, sticky="ew", pady=5)
         fish_size.bind("<<ComboboxSelected>>", self._on_fish_size)
 
     def _tab_advanced(self, tabs: ttk.Notebook) -> None:
@@ -1002,6 +1346,11 @@ class SettingsDialog(tk.Toplevel):
         tk.Checkbutton(page, text="显示密钥", variable=self.show_var, command=self.toggle, bg=BG, fg=FG, selectcolor=PANEL, activebackground=BG, activeforeground=FG, font=FONT_SMALL).grid(row=5, column=1, sticky="w")
         tk.Label(page, textvariable=self.note, bg=BG, fg=WARN, font=FONT_SMALL, wraplength=420, justify="left").grid(row=6, column=0, columnspan=2, sticky="w", pady=(6, 0))
         ttk.Button(page, text="清除密钥", style="Ghost.TButton", command=self.clear_key).grid(row=7, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        self._caption(page, 8, "提醒 webhook")
+        tk.Entry(page, textvariable=self.webhook_var, bg=PANEL, fg=FG, insertbackground=FG, relief="flat", font=FONT_SMALL, highlightthickness=1, highlightbackground=LINE, highlightcolor=ACCENT).grid(row=8, column=1, sticky="ew", pady=4, ipady=3)
+        tk.Checkbutton(page, text="作业完成/失败时发送到手机", variable=self.notify_var, bg=BG, fg=FG, selectcolor=PANEL, activebackground=BG, activeforeground=FG, font=FONT_SMALL).grid(row=9, column=1, sticky="w")
+        self._hint(page, 10, "企业微信群 → 群设置 → 群机器人 → 添加机器人，复制 Webhook 地址粘到这里。钉钉、飞书机器人也可以。")
+        ttk.Button(page, text="发送测试消息", style="Ghost.TButton", command=self._test_webhook).grid(row=11, column=1, sticky="w", pady=(2, 0))
 
     def _tab_net(self, tabs: ttk.Notebook) -> None:
         page = self._page(tabs, "网络与更新")
@@ -1031,7 +1380,16 @@ class SettingsDialog(tk.Toplevel):
         self._caption(page, 0, "当前用户")
         tk.Label(page, text=self.app.user_name, bg=BG, fg=FG, font=FONT, anchor="w").grid(row=0, column=1, sticky="w", pady=5)
         self._hint(page, 1, "退出登录后可以用另一个 Windows 用户重新登记，账号和便利贴各自独立保存。")
-        ttk.Button(page, text="退出登录", style="Ghost.TButton", command=self._logout).grid(row=2, column=0, columnspan=2, sticky="w")
+        self._caption(page, 2, "关闭时")
+        self.close_var = tk.StringVar(value={"ask": "每次询问", "tray": "收到托盘", "ball": "收到桌宠", "close": "关闭程序"}.get(self.app.store.close_action(), "每次询问"))
+        close_box = ttk.Combobox(page, state="readonly", textvariable=self.close_var, values=["每次询问", "收到托盘", "收到桌宠", "关闭程序"])
+        close_box.grid(row=2, column=1, sticky="ew", pady=5)
+        close_box.bind("<<ComboboxSelected>>", self._on_close_action)
+        ttk.Button(page, text="退出登录", style="Ghost.TButton", command=self._logout).grid(row=3, column=0, columnspan=2, sticky="w", pady=(10, 0))
+
+    def _on_close_action(self, _event=None) -> None:
+        key = {"每次询问": "ask", "收到托盘": "tray", "收到桌宠": "ball", "关闭程序": "close"}.get(self.close_var.get(), "ask")
+        self.app.store.set_close_action(key)
 
     def _on_skin(self, _event=None) -> None:
         key = self._skin_by_label.get(self.skin_var.get())
@@ -1049,6 +1407,18 @@ class SettingsDialog(tk.Toplevel):
         self.destroy()
         self.app.after(30, self.app.check_updates)
 
+    def _on_alpha(self, value) -> None:
+        try:
+            alpha = max(0.0, min(float(value) / 100.0, 1.0))
+        except (TypeError, ValueError):
+            return
+        self.app.store.set_bg_alpha(alpha)
+        self.app._paint_window_backdrop()
+        if hasattr(self.app, "plan_board"):
+            self.app.plan_board._paint_backdrop()
+        if hasattr(self.app, "ball") and self.app.ball.winfo_exists():
+            self.app.ball.render(*self.app.ball_numbers())
+
     def _on_ball_style(self, _event=None) -> None:
         style = "fish" if self.ball_style_var.get() == "鱼" else "bar"
         self.app.store.set_ball_style(style)
@@ -1061,6 +1431,18 @@ class SettingsDialog(tk.Toplevel):
             return
         self.app.store.set_fish_width(width)
         self.app.apply_ball_style()
+
+    def _test_webhook(self) -> None:
+        url = self.webhook_var.get().strip()
+        if not url:
+            messagebox.showinfo("测试提醒", "先填写 webhook 地址。", parent=self)
+            return
+        try:
+            send_notification(url, "作业看台测试消息 ✅ 如果你在手机上看到这条，配置就成功了。")
+        except Exception as exc:
+            messagebox.showerror("测试提醒", f"发送失败：{exc}", parent=self)
+            return
+        messagebox.showinfo("测试提醒", "已发送，请查看手机。", parent=self)
 
     def _on_lang(self, _event=None) -> None:
         key = self._lang_by_label.get(self.lang_var.get())
@@ -1119,6 +1501,8 @@ class SettingsDialog(tk.Toplevel):
         proxy = self.proxy_var.get().strip()
         self.app.store.set_proxy(proxy)
         set_proxy(proxy)
+        self.app.store.set_notify_webhook(self.webhook_var.get().strip())
+        self.app.store.set_notify_enabled(bool(self.notify_var.get()))
         fit = self._fit_by_label.get(self.fit_var.get(), "fill")
         self.app.set_bg_image(self.bg_var.get().strip(), fit)
         self.key_var.set("")
@@ -1336,6 +1720,8 @@ class AccountDialog(tk.Toplevel):
         self.user_var = tk.StringVar()
         self.pass_var = tk.StringVar()
         self.extra_var = tk.StringVar()
+        self.scheduler_var = tk.StringVar(value="Slurm")
+        self.proc_var = tk.StringVar()
         self.show_pass = tk.BooleanVar(value=False)
         self.note = tk.StringVar(value="选中左侧账号可修改，或点「新建」。")
         body = tk.Frame(self, bg=BG)
@@ -1368,10 +1754,15 @@ class AccountDialog(tk.Toplevel):
         self.test_btn = ttk.Button(buttons, text="测试连接", style="Ghost.TButton", command=self.test_connection)
         self.test_btn.pack(side="left", padx=(0, 6), pady=4)
         second = tk.Frame(right, bg=BG)
-        second.grid(row=9, column=0, columnspan=2, sticky="w")
+        second.grid(row=10, column=0, columnspan=2, sticky="w")
         ttk.Button(second, text="清除此主机旧密钥", style="Ghost.TButton", command=self.forget_key).pack(side="left", padx=(0, 6), pady=4)
         ttk.Button(second, text="打开配置目录", style="Ghost.TButton", command=self.open_folder).pack(side="left", pady=4)
-        tk.Label(right, textvariable=self.note, bg=BG, fg=WARN, font=FONT_SMALL, justify="left", wraplength=460).grid(row=10, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        mode_row = tk.Frame(right, bg=BG)
+        mode_row.grid(row=9, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        mode_row.columnconfigure(0, weight=1)
+        tk.Label(mode_row, text="没有作业系统的服务器会自动按进程显示（作业号就是 PID）。装了 jd 脚本后能区分完成和失败。", bg=BG, fg=MUTED, font=FONT_SMALL, justify="left", wraplength=460).grid(row=0, column=0, sticky="w", pady=(2, 4))
+        ttk.Button(mode_row, text="安装 jd 脚本（可选，记录退出码）", style="Ghost.TButton", command=self.install_jd_now).grid(row=1, column=0, sticky="w")
+        tk.Label(right, textvariable=self.note, bg=BG, fg=WARN, font=FONT_SMALL, justify="left", wraplength=460).grid(row=11, column=0, columnspan=2, sticky="w", pady=(8, 0))
         self.reload_list(prefer_first=True)
         if not self.ids:
             self.new_account()
@@ -1457,6 +1848,31 @@ class AccountDialog(tk.Toplevel):
             "username": username,
             "extra_path": self.extra_var.get().strip(),
         }
+
+    def install_jd_now(self) -> None:
+        if not self.editing_id:
+            messagebox.showinfo("安装 jd", "先保存这个账号，再安装 jd 脚本。", parent=self)
+            return
+        password = self.store.password(self.editing_id)
+        if not password:
+            messagebox.showinfo("安装 jd", "这个账号还没有保存密码，无法上传脚本。", parent=self)
+            return
+        account = next((item for item in self.store.accounts() if item["id"] == self.editing_id), None)
+        if account is None:
+            return
+        try:
+            path = install_jd(account, password, self.store.known_hosts_path())
+        except Exception as exc:
+            messagebox.showerror("安装 jd", f"上传失败：{exc}", parent=self)
+            return
+        messagebox.showinfo(
+            "安装 jd",
+            f"已安装到服务器：{path}\n\n以后这样提交任务：\n"
+            "  nohup jd run python train.py > train.log 2>&1 &\n\n"
+            "如果 bash 提示找不到 jd，在服务器上把这行加到 ~/.bashrc：\n"
+            "  export PATH=\"$HOME/.local/bin:$PATH\"",
+            parent=self,
+        )
 
     def _typed_password(self) -> str:
         return self.pass_var.get().replace("\r", "").replace("\n", "")
@@ -1676,6 +2092,7 @@ class App(tk.Tk):
         self.busy = False
         self.pending_again = False
         self.jobs: list[Job] = []
+        self.process_jobs: list[Job] = []
         self.row_jobs: dict[str, Job] = {}
         self.brief_jobs: dict[str, list[Job]] = {key: [] for key, *_rest in BRIEF}
         self.account_results: dict[str, AccountResult] = {}
@@ -1685,7 +2102,7 @@ class App(tk.Tk):
         self.fail_count = 0
         self.empty_reason = NO_ACCOUNT
         self.last_stamp = ""
-        self.next_at = time.monotonic() + REFRESH_SECONDS
+        self.next_at = time.monotonic() + self.store.refresh_seconds()
         self.focus_key: tuple[str, str] | None = None
         self._note_after = None
         self._eat_release = False
@@ -1711,6 +2128,7 @@ class App(tk.Tk):
         self.ask_var = tk.StringVar()
         self.stat_vars = {key: tk.StringVar(value="0") for key, *_rest in BRIEF}
         self.always_on_top = bool(self.store.data.get("always_on_top"))
+        self.tray = Tray(self)
         self.wallpaper = Wallpaper()
         if not self.wallpaper.load(self.store.bg_image(), self.store.bg_fit()):
             self.store.set_bg_image("")
@@ -1721,6 +2139,7 @@ class App(tk.Tk):
         self._build()
         i18n.apply(self)
         self.ball = FloatBall(self)
+        self.after(300, self._poll_tray)
         try:
             self.geometry(self.store.data.get("geometry") or "1180x720")
         except tk.TclError:
@@ -1732,7 +2151,7 @@ class App(tk.Tk):
             except tk.TclError:
                 pass
         self._apply_view()
-        self.protocol("WM_DELETE_WINDOW", self.on_close)
+        self.protocol("WM_DELETE_WINDOW", self.on_close_request)
         self.apply_text_style(self.store.text_family(), self.store.text_size(), save=False)
         self.bind("<F5>", lambda _event: self.refresh())
         self.bind("<Unmap>", self._on_unmap)
@@ -1922,6 +2341,24 @@ class App(tk.Tk):
         else:
             self.ball._back_to_numbers()
 
+    def _paint_window_backdrop(self) -> None:
+        canvas = getattr(self, "backdrop", None)
+        if canvas is None:
+            return
+        try:
+            canvas.delete("all")
+            wallpaper = getattr(self, "wallpaper", None)
+            if wallpaper is None or not wallpaper.ready:
+                return
+            width = max(canvas.winfo_width(), 2)
+            height = max(canvas.winfo_height(), 2)
+            photo = wallpaper.tile(canvas, width, height, BG, self.store.bg_alpha())
+            if photo is not None:
+                self._backdrop_photo = photo
+                canvas.create_image(0, 0, image=photo, anchor="nw")
+        except tk.TclError:
+            pass
+
     def set_bg_image(self, path: str, mode: str | None = None) -> None:
         fit = mode or self.store.bg_fit()
         ok = self.wallpaper.load(path, fit)
@@ -2042,33 +2479,38 @@ class App(tk.Tk):
         tool.grid(row=4, column=0, sticky="ew", pady=(10, 8))
         row1 = ttk.Frame(tool, style="App.TFrame")
         row1.pack(fill="x")
-        row2 = ttk.Frame(tool, style="App.TFrame")
-        row2.pack(fill="x", pady=(6, 0))
 
         self.filter_bar = ttk.Frame(row1, style="App.TFrame")
         self.filter_bar.pack(side="left")
         self.filter_buttons: dict[str, ttk.Button] = {}
-        for key, title in FILTERS:
-            button = ttk.Button(self.filter_bar, text=title, style="Ghost.TButton", command=lambda name=key: self.set_filter(name))
-            button.pack(side="left", padx=(0, 6))
-            self.filter_buttons[key] = button
+        self.view_kind = "jobs"
+        self.kind_jobs_btn = ttk.Button(row1, text="作业", style="Accent.TButton", command=lambda: self.set_view_kind("jobs"))
+        self.kind_jobs_btn.pack(side="left", padx=(0, 4))
+        self.kind_proc_btn = ttk.Button(row1, text="进程", style="Ghost.TButton", command=lambda: self.set_view_kind("process"))
+        self.kind_proc_btn.pack(side="left", padx=(0, 10))
         self.top_on = False
-        self.top_btn = ttk.Button(self.filter_bar, text="top", style="Ghost.TButton", command=self.toggle_top)
+        self.top_btn = ttk.Button(row1, text="top", style="Ghost.TButton", command=self.toggle_top)
         self.top_btn.pack(side="left", padx=(0, 6))
         self.later_btn = ttk.Button(row1, text="稍后", style="Ghost.TButton", command=self.open_later)
-
-        self.search_caption = ttk.Label(row2, text="搜索", style="Muted.TLabel")
-        self.search_caption.pack(side="left", padx=(0, 4))
-        search = tk.Entry(row2, textvariable=self.search_var, width=18, bg=PANEL, fg=FG, insertbackground=FG, relief="flat", font=FONT, highlightthickness=1, highlightbackground=LINE, highlightcolor=ACCENT)
+        self.search_caption = ttk.Label(row1, text="搜索", style="Muted.TLabel")
+        self.search_caption.pack(side="left", padx=(10, 4))
+        search = tk.Entry(row1, textvariable=self.search_var, width=16, bg=PANEL, fg=FG, insertbackground=FG, relief="flat", font=FONT, highlightthickness=1, highlightbackground=LINE, highlightcolor=ACCENT)
         search.pack(side="left", ipady=3)
         self.search_var.trace_add("write", lambda *_args: self.redraw())
-        ttk.Label(row2, text="结束作业近", style="Muted.TLabel").pack(side="left", padx=(12, 4))
-        self.days_box = ttk.Combobox(row2, width=4, state="readonly", values=("1", "3", "7", "14", "30"))
+        ttk.Label(row1, text="结束作业近", style="Muted.TLabel").pack(side="left", padx=(10, 4))
+        self.days_box = ttk.Combobox(row1, width=4, state="readonly", values=("1", "3", "7", "14", "30"))
         self.days_box.set(str(self.store.history_days()))
         self.days_box.pack(side="left")
         self.days_box.bind("<<ComboboxSelected>>", self.on_days)
-        ttk.Label(row2, text="天", style="Muted.TLabel").pack(side="left", padx=(4, 0))
-        meta = ttk.Frame(row2, style="App.TFrame")
+        ttk.Label(row1, text="天", style="Muted.TLabel").pack(side="left", padx=(4, 0))
+        ttk.Label(row1, text="刷新间隔", style="Muted.TLabel").pack(side="left", padx=(10, 4))
+        self.refresh_var = tk.StringVar(value=str(max(1, self.store.refresh_seconds() // 60)))
+        refresh_entry = tk.Entry(row1, textvariable=self.refresh_var, width=4, bg=PANEL, fg=FG, insertbackground=FG, relief="flat", font=FONT, highlightthickness=1, highlightbackground=LINE, highlightcolor=ACCENT)
+        refresh_entry.pack(side="left", ipady=3)
+        refresh_entry.bind("<Return>", self._apply_refresh_minutes)
+        refresh_entry.bind("<FocusOut>", self._apply_refresh_minutes)
+        ttk.Label(row1, text="分钟", style="Muted.TLabel").pack(side="left", padx=(4, 0))
+        meta = ttk.Frame(row1, style="App.TFrame")
         meta.pack(side="right")
         ttk.Label(meta, textvariable=self.meta_var, style="Muted.TLabel").pack(side="left", padx=(0, 12))
         ttk.Label(meta, textvariable=self.count_var, style="Muted.TLabel").pack(side="left")
@@ -2135,6 +2577,17 @@ class App(tk.Tk):
         self.tree.bind("<Return>", self.on_tree_double)
         self.tree.bind("<Button-3>", self.on_right)
         self.tree.bind("<MouseWheel>", lambda event: self.tree.yview_scroll(int(-event.delta / 120), "units"))
+        self.proc_view = tk.Frame(self.main, bg=BG)
+        self.proc_view.grid(row=0, column=0, sticky="nsew")
+        self.proc_view.grid_remove()
+        self.proc_view.rowconfigure(0, weight=1)
+        self.proc_view.columnconfigure(0, weight=1)
+        self.proc_text = tk.Text(self.proc_view, bg=palette.card, fg=palette.fg, relief="flat", font=("Consolas", 12), wrap="none", padx=12, pady=10)
+        proc_scroll = ttk.Scrollbar(self.proc_view, orient="vertical", command=self.proc_text.yview)
+        self.proc_text.configure(yscrollcommand=proc_scroll.set)
+        self.proc_text.grid(row=0, column=0, sticky="nsew")
+        proc_scroll.grid(row=0, column=1, sticky="ns")
+        self.proc_text.configure(state="disabled")
         self.menu = tk.Menu(self, tearoff=0)
         self.menu.add_command(label="查看详情", command=self.on_open)
         self.menu.add_command(label="写备注", command=self.note_selected)
@@ -2374,7 +2827,7 @@ class App(tk.Tk):
         self.refresh()
 
     def _paint_later(self) -> None:
-        count = len(self.store.later_keys())
+        count = len(self.store.later_items())
         if count:
             self.later_btn.configure(text=f"{i18n.tr('稍后')} {count}")
             if not self.later_btn.winfo_ismapped():
@@ -2403,19 +2856,35 @@ class App(tk.Tk):
         self.redraw()
 
     def _apply_view(self) -> None:
+        if getattr(self, "view_kind", "jobs") == "process":
+            self.brief.grid_remove()
+            self.table.grid_remove()
+            self.proc_view.grid()
+            return
+        self.proc_view.grid_remove()
         if self.view == "brief":
             self.table.grid_remove()
             self.brief.grid()
-            if self.filter_bar.winfo_ismapped():
-                self.filter_bar.pack_forget()
         else:
             self.brief.grid_remove()
             self.table.grid()
-            if not self.filter_bar.winfo_ismapped():
-                if self.later_btn.winfo_ismapped():
-                    self.filter_bar.pack(side="left", before=self.later_btn)
-                else:
-                    self.filter_bar.pack(side="left")
+
+    def _fill_process_view(self) -> None:
+        jobs = self.process_jobs
+        if self.account_filter != "all":
+            jobs = [job for job in jobs if job.account_id == self.account_filter]
+        jobs = [job for job in jobs if self._search_hit(job)]
+        header = f"{'PID':>8}  {'已运行':>12}  {'内存':>6}  {'账号':<14}  {'命令'}"
+        lines = [header, "-" * 100]
+        for job in sorted(jobs, key=lambda item: item.elapsed, reverse=True):
+            lines.append(f"{job.job_id:>8}  {job.elapsed:>12}  {job.memory:>6}  {job.account_label[:14]:<14}  {job.name}")
+        if len(lines) == 2:
+            lines.append("")
+            lines.append("没有运行超过 1 分钟的进程。")
+        self.proc_text.configure(state="normal")
+        self.proc_text.delete("1.0", "end")
+        self.proc_text.insert("1.0", "\n".join(lines))
+        self.proc_text.configure(state="disabled")
 
     def on_stat(self, name: str) -> None:
         if name == "done" and self.hide_done.get():
@@ -2602,8 +3071,68 @@ class App(tk.Tk):
             return False
         return True
 
+    def open_processes(self) -> None:
+        ProcessWindow(self)
+
+    def on_close_request(self) -> None:
+        action = self.store.close_action()
+        if action == "close":
+            self.on_close()
+        elif action == "tray":
+            self.hide_to_tray()
+        elif action == "ball":
+            self.minimize_to_ball()
+        else:
+            CloseChoiceDialog(self)
+
+    def remember_close(self, action: str, remember: bool) -> None:
+        if remember:
+            self.store.set_close_action(action)
+        if action == "close":
+            self.on_close()
+        elif action == "tray":
+            self.hide_to_tray()
+        else:
+            self.minimize_to_ball()
+
+    def hide_to_tray(self) -> None:
+        try:
+            self.ball.hide()
+        except Exception:
+            pass
+        self.withdraw()
+        self.tray.show()
+
+    def restore_from_tray(self) -> None:
+        self.tray.hide()
+        try:
+            self.deiconify()
+            self.lift()
+            self.focus_force()
+        except tk.TclError:
+            pass
+
+    def _poll_tray(self) -> None:
+        action = self.tray.consume()
+        if action == "open":
+            self.restore_from_tray()
+        elif action == "ball":
+            self.tray.hide()
+            self.restore_from_tray()
+            self.minimize_to_ball()
+        elif action == "quit":
+            self.on_close()
+        try:
+            self.after(300, self._poll_tray)
+        except tk.TclError:
+            pass
+
     def on_close(self) -> None:
         self.alive = False
+        try:
+            self.tray.hide()
+        except Exception:
+            pass
         try:
             if not self._in_ball:
                 self.store.data["geometry"] = self.geometry()
@@ -2888,7 +3417,7 @@ class App(tk.Tk):
             self.account_results = {}
             self.fail_count = 0
             self.empty_reason = NO_ACCOUNT
-            self.next_at = time.monotonic() + REFRESH_SECONDS
+            self.next_at = time.monotonic() + self.store.refresh_seconds()
             self.last_stamp = ""
             self.meta_var.set("还没有账号")
             self.title(self._window_title())
@@ -2959,6 +3488,7 @@ class App(tk.Tk):
         again = self.pending_again
         self.pending_again = False
         self.jobs = []
+        self.process_jobs: list[Job] = []
         lines = []
         fails = 0
         setup_gaps = 0
@@ -2977,9 +3507,14 @@ class App(tk.Tk):
                     fails += 1
                     lines.append(("bad", f"{title}  {result.username}@{result.host}:{result.port}  {result.error}"))
                 continue
-            self.jobs.extend(result.jobs)
-            run, wait, done, bad = self._count_jobs(result.jobs)
+            slurm_jobs = [job for job in result.jobs if job.source != "process"]
+            proc_jobs = [job for job in result.jobs if job.source == "process"]
+            self.jobs.extend(slurm_jobs)
+            self.process_jobs.extend(proc_jobs)
+            run, wait, done, bad = self._count_jobs(slurm_jobs)
             note = f"  {result.notice}" if result.notice else ""
+            if proc_jobs:
+                note += f"  进程任务 {len(proc_jobs)} 个"
             lines.append(("ok", f"{title}  {result.username}@{result.host}:{result.port}  {i18n.counts(run, wait, done, bad)}{note}"))
         self.fail_count = fails
         if not self.jobs and setup_gaps and fails == 0:
@@ -2995,7 +3530,7 @@ class App(tk.Tk):
         self.store.set_job_buckets(next_buckets(previous, self.jobs))
         self.last_stamp = time.strftime("%H:%M:%S")
         self.meta_var.set(i18n.tr(f"上次刷新 {self.last_stamp}"))
-        self.next_at = time.monotonic() + REFRESH_SECONDS
+        self.next_at = time.monotonic() + self.store.refresh_seconds()
         self.title(self._window_title("" if fails == 0 else f"{fails} 个账号未连上"))
         self._set_status(lines or [("muted", "没有账号结果。")])
         self._update_banner()
@@ -3005,9 +3540,34 @@ class App(tk.Tk):
         if again:
             self.refresh()
 
+    def _notify_webhook(self, jobs: list[Job]) -> None:
+        webhook = self.store.notify_webhook()
+        if not webhook or not self.store.notify_enabled():
+            return
+        lines = []
+        for job in jobs:
+            bucket = job_bucket(job)
+            if bucket not in ("done", "bad"):
+                continue
+            mark = "✅ 完成" if bucket == "done" else "❌ 失败"
+            extra = f"  用时 {job.elapsed}" if job.elapsed else ""
+            lines.append(f"{mark}  {self.display_account(job)}  {job.name or job.job_id}  ({job.job_id}){extra}")
+        if not lines:
+            return
+        text = "\n".join(lines)
+
+        def work() -> None:
+            try:
+                send_notification(webhook, text)
+            except Exception:
+                pass
+
+        threading.Thread(target=work, daemon=True).start()
+
     def _announce(self, jobs: list[Job]) -> None:
         if not self.alive or not jobs:
             return
+        self._notify_webhook(jobs)
         done = sum(1 for job in jobs if job_bucket(job) == "done")
         bad = sum(1 for job in jobs if job_bucket(job) == "bad")
         if hasattr(self, "ball") and self._in_ball:
@@ -3089,10 +3649,34 @@ class App(tk.Tk):
         return job_key(job) not in self.store.dismissed_jobs()
 
     def scoped_jobs(self) -> list[Job]:
-        jobs = self.jobs
+        jobs = self.jobs if getattr(self, "view_kind", "jobs") == "jobs" else self.process_jobs
         if self.account_filter != "all":
             jobs = [job for job in jobs if job.account_id == self.account_filter]
         return [job for job in jobs if self._search_hit(job) and self._shown(job)]
+
+    def set_view_kind(self, kind: str) -> None:
+        self.view_kind = "process" if kind == "process" else "jobs"
+        self.kind_jobs_btn.configure(style="Accent.TButton" if self.view_kind == "jobs" else "Ghost.TButton")
+        self.kind_proc_btn.configure(style="Accent.TButton" if self.view_kind == "process" else "Ghost.TButton")
+        state = "disabled" if self.view_kind == "process" else "normal"
+        for button in (self.brief_btn, self.full_btn):
+            try:
+                button.configure(state=state)
+            except tk.TclError:
+                pass
+        self._apply_view()
+        self.redraw()
+
+    def _apply_refresh_minutes(self, _event=None) -> None:
+        try:
+            minutes = int(float(self.refresh_var.get() or 0))
+        except ValueError:
+            return
+        minutes = max(1, min(minutes, 120))
+        self.refresh_var.set(str(minutes))
+        self.store.set_refresh_seconds(minutes * 60)
+        self.next_at = time.monotonic() + minutes * 60
+        self.redraw()
 
     def _search_hit(self, job: Job) -> bool:
         query = self.search_var.get().strip().casefold()
@@ -3213,6 +3797,9 @@ class App(tk.Tk):
         self.stat_vars["bad"].set(str(bad))
         self._fill_brief(scoped)
         self._fill_tree(scoped)
+        if getattr(self, "view_kind", "jobs") == "process":
+            self._fill_process_view()
+            self._apply_view()
         tops = self._scoped_tops()
         self._paint_top(not scoped, tops)
         self._show_empty(not scoped and not tops)
@@ -3288,7 +3875,9 @@ class App(tk.Tk):
             if bucket in counts:
                 counts[bucket] += 1
         for key, title in FILTERS:
-            self.filter_buttons[key].configure(text=f"{i18n.tr(title)} {counts[key]}")
+            button = self.filter_buttons.get(key)
+            if button is not None:
+                button.configure(text=f"{i18n.tr(title)} {counts[key]}")
         self._style_filters()
         if self.sort_col:
             rows.sort(key=lambda job: _column_value(self.sort_col or "", job), reverse=self.sort_desc)
@@ -3564,28 +4153,37 @@ class App(tk.Tk):
         DetailWindow(self, job, self.display_account(job))
 
     def defer(self, job: Job) -> None:
-        keys = self.store.later_keys()
+        items = self.store.later_items()
         key = job_key(job)
-        if key not in keys:
-            keys.append(key)
-        self.store.set_later_keys(keys)
+        if not any(item.get("key") == key for item in items):
+            items.append(
+                {
+                    "key": key,
+                    "job_id": job.job_id,
+                    "name": job.name or "",
+                    "label": self.display_account(job),
+                    "added": int(time.time()),
+                }
+            )
+        self.store.set_later_items(items)
         self._paint_later()
 
     def drop_later(self, job: Job) -> None:
-        key = job_key(job)
-        keys = [item for item in self.store.later_keys() if item != key]
-        if len(keys) != len(self.store.later_keys()):
-            self.store.set_later_keys(keys)
-            self._paint_later()
+        self.drop_later_key(job_key(job))
 
-    def later_jobs(self) -> tuple[list[Job], list[str]]:
+    def drop_later_key(self, key: str) -> None:
+        items = [item for item in self.store.later_items() if item.get("key") != key]
+        self.store.set_later_items(items)
+        self._paint_later()
+
+    def later_jobs(self) -> tuple[list[Job], list[dict]]:
         by_key = {job_key(job): job for job in self.jobs}
-        found = []
-        missing = []
-        for key in self.store.later_keys():
-            job = by_key.get(key)
+        found: list[Job] = []
+        missing: list[dict] = []
+        for item in self.store.later_items():
+            job = by_key.get(item.get("key"))
             if job is None:
-                missing.append(key)
+                missing.append(item)
             else:
                 found.append(job)
         return found, missing
