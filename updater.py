@@ -295,7 +295,7 @@ def _check_blob(blob: bytes, sha256: str, size: int) -> None:
         raise UpdateError("下载到的文件和清单里的 sha256 对不上，已放弃更新。")
 
 
-def download_release(url: str, sha256: str = "", size: int = 0) -> Path:
+def download_release(url: str, sha256: str = "", size: int = 0, progress=None, limit: int = 400 * 1024 * 1024) -> Path:
     if not url.startswith("https://"):
         raise UpdateError("新版本的下载地址需要以 https:// 开头。")
     folder = data_dir() / "update"
@@ -307,15 +307,31 @@ def download_release(url: str, sha256: str = "", size: int = 0) -> Path:
             final = str(response.geturl() or "")
             if not final.startswith("https://"):
                 raise UpdateError("下载地址跳到了不安全的链接。")
-            blob = response.read(80 * 1024 * 1024 + 1)
+            try:
+                total = int(response.headers.get("Content-Length") or size or 0)
+            except (TypeError, ValueError):
+                total = size or 0
+            done = 0
+            with target.open("wb") as handle:
+                while True:
+                    chunk = response.read(256 * 1024)
+                    if not chunk:
+                        break
+                    done += len(chunk)
+                    if done > limit:
+                        raise UpdateError("下载到的文件太大。")
+                    handle.write(chunk)
+                    if progress is not None:
+                        try:
+                            progress(done, total)
+                        except Exception:
+                            pass
     except UpdateError:
         raise
     except Exception as exc:
         raise UpdateError(f"下载没有完成：{exc}") from exc
-    if len(blob) > 80 * 1024 * 1024:
-        raise UpdateError("下载到的文件太大。")
+    blob = target.read_bytes()
     _check_blob(blob, sha256, size)
-    target.write_bytes(blob)
     return target
 
 
@@ -323,31 +339,47 @@ def launch_swap(downloaded: Path, pid: int) -> None:
     if not getattr(sys, "frozen", False):
         raise UpdateError("现在是从源码打开的，不能替换这个程序。请打开桌面上的作业看台.exe。")
     destination = Path(sys.executable)
-    script = Path(os.environ.get("TEMP") or str(data_dir())) / "linuxjobdesk-update.ps1"
-    src = str(downloaded).replace("'", "''")
-    dst = str(destination).replace("'", "''")
-    script.write_text(
-        "\n".join(
-            [
-                "$ErrorActionPreference = 'Stop'",
-                f"$src = '{src}'",
-                f"$dst = '{dst}'",
-                f"while (Get-Process -Id {int(pid)} -ErrorAction SilentlyContinue) {{ Start-Sleep -Milliseconds 400 }}",
-                "$copied = $false",
-                "for ($i = 0; $i -lt 20; $i++) {",
-                "  try { Copy-Item -LiteralPath $src -Destination $dst -Force; $copied = $true; break }",
-                "  catch { Start-Sleep -Milliseconds 300 }",
-                "}",
-                "if ($copied) { Start-Process -FilePath $dst; Remove-Item -LiteralPath $src -Force }",
-                "Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force",
-                "",
-            ]
-        ),
-        encoding="utf-8-sig",
-    )
+    script = Path(os.environ.get("TEMP") or str(data_dir())) / "linuxjobdesk-update.bat"
+    new_size = downloaded.stat().st_size if downloaded.exists() else 0
+    lines = [
+        "@echo off",
+        "setlocal",
+        f'set "SRC={downloaded}"',
+        f'set "DST={destination}"',
+        "set /a N=0",
+        ":wait",
+        f'tasklist /FI "PID eq {int(pid)}" 2>nul | find "{int(pid)}" >nul',
+        "if not errorlevel 1 goto stillrunning",
+        "goto copy",
+        ":stillrunning",
+        "timeout /t 1 /nobreak >nul",
+        "set /a N+=1",
+        "if %N% LSS 60 goto wait",
+        ":copy",
+        'copy /y "%SRC%" "%DST%" >nul 2>&1',
+        "if errorlevel 1 goto retry",
+        'for %%A in ("%SRC%") do set "SRCSZ=%%~zA"',
+        'for %%A in ("%DST%") do set "DSTSZ=%%~zA"',
+        'if not "%SRCSZ%"=="%DSTSZ%" goto retry',
+        "goto done",
+        ":retry",
+        "timeout /t 1 /nobreak >nul",
+        "set /a N+=1",
+        "if %N% LSS 120 goto copy",
+        "rem could not overwrite: run the downloaded copy directly",
+        'start "" "%SRC%"',
+        "goto end",
+        ":done",
+        'start "" "%DST%"',
+        'del /f /q "%SRC%" >nul 2>&1',
+        ":end",
+        'del /f /q "%~f0" >nul 2>&1',
+        "",
+    ]
+    script.write_text("\r\n".join(lines), encoding="mbcs", errors="replace")
     flags = 0x08000000 | 0x00000008
     subprocess.Popen(
-        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)],
+        ["cmd", "/c", "start", "", "/min", str(script)],
         creationflags=flags,
         close_fds=True,
     )
