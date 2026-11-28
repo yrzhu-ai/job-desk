@@ -361,6 +361,20 @@ class Store:
         self.data["job_buckets"] = buckets
         self.save()
 
+    def later_items(self) -> list[dict]:
+        raw = self.data.get("later_items")
+        if isinstance(raw, list) and raw:
+            return [item for item in raw if isinstance(item, dict) and item.get("key")]
+        items = []
+        for key in self.later_keys():
+            items.append({"key": key, "job_id": key.split(":", 1)[-1], "name": "", "label": "", "added": 0})
+        return items
+
+    def set_later_items(self, items: list[dict]) -> None:
+        self.data["later_items"] = items[:200]
+        self.data.pop("later_keys", None)
+        self.save()
+
     def later_keys(self) -> list[str]:
         raw = self.data.get("later_keys")
         if not isinstance(raw, list):
@@ -725,6 +739,68 @@ class Store:
 
     def set_bg_image(self, path: str) -> None:
         self.data["bg_image"] = str(path or "").strip()
+        self.save()
+
+    def notify_webhook(self) -> str:
+        return str(self.data.get("notify_webhook") or "").strip()
+
+    def set_notify_webhook(self, url: str) -> None:
+        self.data["notify_webhook"] = str(url or "").strip()
+        self.save()
+
+    def notify_enabled(self) -> bool:
+        return bool(self.data.get("notify_enabled", True))
+
+    def set_notify_enabled(self, enabled: bool) -> None:
+        self.data["notify_enabled"] = bool(enabled)
+        self.save()
+
+    def refresh_seconds(self) -> int:
+        try:
+            value = int(self.data.get("refresh_seconds") or 60)
+        except (TypeError, ValueError):
+            value = 60
+        return max(15, min(value, 3600))
+
+    def set_refresh_seconds(self, value: int) -> None:
+        self.data["refresh_seconds"] = max(15, min(int(value), 3600))
+        self.save()
+
+    def throw_mode(self) -> str:
+        value = str(self.data.get("throw_mode") or "bounce")
+        return value if value in {"bounce", "toss"} else "bounce"
+
+    def set_throw_mode(self, value: str) -> None:
+        self.data["throw_mode"] = value if value in {"bounce", "toss"} else "bounce"
+        self.save()
+
+    def toss_best(self) -> int:
+        try:
+            return int(self.data.get("toss_best") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def set_toss_best(self, value: int) -> None:
+        self.data["toss_best"] = max(0, int(value))
+        self.save()
+
+    def close_action(self) -> str:
+        value = str(self.data.get("close_action") or "ask")
+        return value if value in {"ask", "close", "ball", "tray"} else "ask"
+
+    def set_close_action(self, value: str) -> None:
+        self.data["close_action"] = value if value in {"ask", "close", "ball", "tray"} else "ask"
+        self.save()
+
+    def bg_alpha(self) -> float:
+        try:
+            value = float(self.data.get("bg_alpha", 0.25))
+        except (TypeError, ValueError):
+            value = 0.25
+        return max(0.0, min(value, 1.0))
+
+    def set_bg_alpha(self, value: float) -> None:
+        self.data["bg_alpha"] = max(0.0, min(float(value), 1.0))
         self.save()
 
     def bg_fit(self) -> str:
