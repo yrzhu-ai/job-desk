@@ -118,6 +118,15 @@ if ! command -v squeue >/dev/null 2>&1; then
   fi
 fi
 echo __BEGIN__
+USER_NAME="${USER:-$(id -un)}"
+echo __PROC__
+ps -u "$USER_NAME" -o pid=,ppid=,stat=,etime=,pcpu=,pmem=,args= 2>/dev/null
+echo __META__
+for f in "$HOME"/.jobdesk/jobs/*.meta; do
+  [ -r "$f" ] || continue
+  echo "@@FILE@@ $f"
+  cat "$f" 2>/dev/null
+done
 if ! command -v squeue >/dev/null 2>&1; then
   echo __MISSING_SQUEUE__
   echo __TOP__
@@ -232,6 +241,7 @@ class Parsed:
     squeue_err: str = ""
     sacct_err: str = ""
     top_text: str = ""
+    proc_text: str = ""
 
 
 class _RememberKey(paramiko.MissingHostKeyPolicy):
@@ -424,6 +434,8 @@ def parse_query(text: str) -> Parsed:
     parsed.squeue_err = _marked_block(text, "__SQUEUE_ERR_BEGIN__", "__SQUEUE_ERR_END__")
     parsed.sacct_err = _marked_block(text, "__SACCT_ERR_BEGIN__", "__SACCT_ERR_END__")
     parsed.top_text = _between(text, "__TOP__", ["__TOP_END__", "__END__"]).strip()[:8000]
+    if "__PROC__" in text:
+        parsed.proc_text = "__PROC__\n" + _between(text, "__PROC__", ["__END__"]).strip()
     squeue_body = _between(text, "__SQUEUE__", ["__SQUEUE_RC__", "__SACCT__", "__END__"])
     sacct_body = _between(text, "__SACCT__", ["__SACCT_RC__", "__MISSING_SACCT__", "__SACCT_ERR_BEGIN__", "__END__"])
     width = len(_SQUEUE_FIELDS_MIN) if parsed.squeue_min else len(_SQUEUE_FIELDS)
@@ -441,6 +453,9 @@ def parse_query(text: str) -> Parsed:
 
 def interpret(parsed: Parsed) -> tuple[list[Job], str, str]:
     if parsed.missing_squeue:
+        jobs = parse_proc(parsed.proc_text) if parsed.proc_text else []
+        if jobs:
+            return jobs, "", "这台机器没有作业系统，按进程显示（作业号就是 PID）。"
         if parsed.top_text:
             return [], "", "这台机器没有作业系统，已改看 top。"
         return [], "找不到 squeue。这台机器可能不是 Slurm，或附加 PATH 不对。", ""
@@ -455,8 +470,15 @@ def interpret(parsed: Parsed) -> tuple[list[Job], str, str]:
     elif parsed.sacct_rc not in (None, 0):
         message = one_line(parsed.sacct_err, 180) or f"退出码 {parsed.sacct_rc}"
         notices.append(f"已结束作业没读到：{message}")
-    return merge_jobs(parsed.squeue_jobs, parsed.sacct_jobs), "", " ".join(notices)
-
+    merged = merge_jobs(parsed.squeue_jobs, parsed.sacct_jobs)
+    if parsed.proc_text:
+        proc_jobs = parse_proc(parsed.proc_text)
+        known = {job.job_id for job in merged}
+        extra = [job for job in proc_jobs if job.job_id not in known]
+        if extra:
+            merged.extend(extra)
+            notices.append(f"另有 {len(extra)} 个进程任务（nohup）。")
+    return merged, "", " ".join(notices)
 
 def merge_jobs(squeue_jobs: list[Job], sacct_jobs: list[Job]) -> list[Job]:
     packed = [job.job_id.split("_[", 1)[0] + "_" for job in squeue_jobs if "_[" in job.job_id]
@@ -577,7 +599,242 @@ def connect_account(account: dict, password: str, known_hosts: Path) -> paramiko
     return _open_client(result, password, known_hosts)
 
 
+_PROC_SCRIPT = """export LC_ALL=C
+USER_NAME="${USER:-$(id -un)}"
+echo __BEGIN__
+echo __PROC__
+ps -u "$USER_NAME" -o pid=,stat=,etime=,pcpu=,pmem=,args= 2>/dev/null
+echo __META__
+for f in "$HOME"/.jobdesk/jobs/*.meta; do
+  [ -r "$f" ] || continue
+  echo "@@FILE@@ $f"
+  cat "$f" 2>/dev/null
+done
+echo __END__
+"""
+
+_NOISE = (
+    "bash", "zsh", "sh", "ssh", "sshd", "sftp-server", "ps", "top", "htop", "vim", "vi", "nano",
+    "tmux", "screen", "less", "more", "tail", "watch", "grep", "awk", "sed", "cat", "ls", "man",
+    "jobdesk", "sleep",
+)
+
+
+def _etime_seconds(text: str) -> int:
+    """Parse ps etime: SS, MM:SS, HH:MM:SS or D-HH:MM:SS."""
+    value = (text or "").strip()
+    if not value:
+        return 0
+    days = 0
+    if "-" in value:
+        head, value = value.split("-", 1)
+        try:
+            days = int(head)
+        except ValueError:
+            days = 0
+    parts = value.split(":")
+    try:
+        numbers = [int(part) for part in parts]
+    except ValueError:
+        return 0
+    if len(numbers) == 3:
+        return days * 86400 + numbers[0] * 3600 + numbers[1] * 60 + numbers[2]
+    if len(numbers) == 2:
+        return days * 86400 + numbers[0] * 60 + numbers[1]
+    if len(numbers) == 1:
+        return days * 86400 + numbers[0]
+    return 0
+
+
+def _is_noise(command: str) -> bool:
+    text = command.strip()
+    if not text:
+        return True
+    if text.startswith("bash --noprofile --norc -s"):
+        return True
+    first = text.split()[0].split("/")[-1]
+    if first in _NOISE:
+        return True
+    return False
+
+
+def build_proc_script(keyword: str = "") -> str:
+    return _PROC_SCRIPT
+
+
+def parse_proc(text: str) -> list[Job]:
+    """Turn `ps` output plus jd metadata into jobs (running + finished)."""
+    section = "proc"
+    jobs: list[Job] = []
+    seen: set[str] = set()
+    meta: dict[str, dict] = {}
+    current: dict | None = None
+    for raw in text.splitlines():
+        line = raw.rstrip("\n")
+        if line == "__PROC__":
+            section = "proc"
+            continue
+        if line == "__META__":
+            section = "meta"
+            continue
+        if line == "__END__":
+            break
+        if section == "proc":
+            parts = line.split(None, 6)
+            if len(parts) < 7:
+                continue
+            pid, ppid, stat, etime, pcpu, pmem, command = parts
+            if _is_noise(command) or stat.startswith("Z"):
+                continue
+            if _etime_seconds(etime) < 60:
+                continue
+            seen.add(pid)
+            jobs.append(
+                Job(
+                    job_id=pid,
+                    name=one_line(command, 80),
+                    state="RUNNING",
+                    elapsed=etime,
+                    timelimit="",
+                    partition="进程",
+                    cpus="-",
+                    memory=f"{pmem}%",
+                    place=ppid,
+                    submit="",
+                    start="",
+                    end="",
+                    exit_code="",
+                    source="process",
+                    workdir="",
+                )
+            )
+        elif section == "meta":
+            if line.startswith("@@FILE@@ "):
+                if current:
+                    meta[current.get("pid", "")] = current
+                current = {}
+                continue
+            if current is None:
+                continue
+            if "=" in line:
+                key, value = line.split("=", 1)
+                current[key.strip()] = value.strip()
+    if current:
+        meta[current.get("pid", "")] = current
+
+    slurm_pids = {
+        job.job_id
+        for job in jobs
+        if any(word in job.name.lower() for word in ("slurm", "srun", "sbatch", "squeue"))
+    }
+    jobs = [
+        job
+        for job in jobs
+        if job.partition != "进程"
+        or (job.place not in slurm_pids and not any(word in job.name.lower() for word in ("slurm", "srun", "sbatch")))
+    ]
+
+    for pid, info in meta.items():
+        if not pid or pid in seen:
+            continue
+        try:
+            start = int(info.get("start") or 0)
+            end = int(info.get("end") or 0)
+            code = int(info.get("code") or -1)
+        except ValueError:
+            continue
+        if end <= 0:
+            continue
+        seconds = max(0, end - start)
+        jobs.append(
+            Job(
+                job_id=pid,
+                name=one_line(info.get("cmd") or "jd 任务", 80),
+                state="COMPLETED" if code == 0 else "FAILED",
+                elapsed=duration_text(seconds),
+                timelimit="",
+                partition="进程",
+                cpus="-",
+                memory="-",
+                place="-",
+                submit="",
+                start="",
+                end="",
+                exit_code=str(code),
+                source="process",
+                workdir="",
+            )
+        )
+    return jobs
+
+
+def query_process(account: dict, password: str, known_hosts: Path) -> AccountResult:
+    keyword = str(account.get("proc_filter") or "").strip().lower()
+    result, output, error = _run_account_script(account, password, known_hosts, build_proc_script(keyword))
+    if result.error:
+        return result
+    if "__BEGIN__" not in output:
+        result.error = "远程命令没有跑起来。" + (f" {one_line(error or output)}" if error or output else "")
+        return result
+    jobs = parse_proc(output)
+    if keyword:
+        words = [word.strip() for word in keyword.split(",") if word.strip()]
+        jobs = [job for job in jobs if any(word in job.name.lower() for word in words)]
+    for job in jobs:
+        job.account_id = str(account.get("id") or "")
+        job.account_label = result.label
+        job.username = result.username
+        job.host = result.host
+        job.port = result.port
+    result.jobs = jobs
+    if not keyword:
+        result.notice = "进程模式：显示该用户全部进程（已过滤 shell 等噪音）。"
+    return result
+
+
+JD_SCRIPT = """#!/usr/bin/env bash
+# jd - Job Desk 包装器：记录退出码，让桌面端能区分「跑完」和「跑挂」。
+# 用法: jd run python train.py --epochs 100
+set -u
+if [ "${1:-}" = "run" ]; then shift; fi
+if [ "$#" -eq 0 ]; then echo "用法: jd run <命令> [参数...]" >&2; exit 2; fi
+DIR="$HOME/.jobdesk/jobs"; mkdir -p "$DIR"
+START=$(date +%s)
+"$@" &
+CHILD=$!
+FILE="$DIR/$CHILD.meta"
+printf 'pid=%s\\nstart=%s\\nend=0\\ncode=-1\\ncmd=%s\\n' "$CHILD" "$START" "$*" > "$FILE"
+wait "$CHILD"
+CODE=$?
+printf 'pid=%s\\nstart=%s\\nend=%s\\ncode=%s\\ncmd=%s\\n' "$CHILD" "$START" "$(date +%s)" "$CODE" "$*" > "$FILE"
+exit "$CODE"
+"""
+
+
+def install_jd(account: dict, password: str, known_hosts: Path) -> str:
+    """Upload the jd wrapper to ~/.local/bin/jd on the server."""
+    client = connect_account(account, password, known_hosts)
+    try:
+        sftp = client.open_sftp()
+        try:
+            script = "mkdir -p \"$HOME/.local/bin\" && cat > \"$HOME/.local/bin/jd\" && chmod +x \"$HOME/.local/bin/jd\" && echo __JD_OK__"
+            _stdin, stdout, stderr = client.exec_command(f"bash -c {shlex.quote(script)}", timeout=30)
+            _stdin.write(JD_SCRIPT)
+            _stdin.channel.shutdown_write()
+            out = stdout.read().decode("utf-8", "replace")
+            err = stderr.read().decode("utf-8", "replace")
+        finally:
+            sftp.close()
+    finally:
+        client.close()
+    if "__JD_OK__" not in out:
+        raise RuntimeError(one_line(err or out) or "上传失败")
+    return "$HOME/.local/bin/jd"
+
+
 def query_account(account: dict, password: str, history_days: int, known_hosts: Path) -> AccountResult:
+    if str(account.get("scheduler") or "slurm") == "process":
+        return query_process(account, password, known_hosts)
     script, path_notice = build_script(str(account.get("extra_path") or ""), history_days)
     result, output, error = _run_account_script(account, password, known_hosts, script)
     if result.error:
