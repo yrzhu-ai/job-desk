@@ -684,7 +684,7 @@ class PlanBoard(tk.Frame):
         canvas.delete("backdrop")
         width = max(canvas.winfo_width(), 240)
         height = max(canvas.winfo_height(), 240)
-        photo = wallpaper.tile(canvas, width, height, CARD, 0.20)
+        photo = wallpaper.tile(canvas, width, height, CARD, self.app.store.bg_alpha())
         if photo is None:
             return
         self._backdrop = photo
