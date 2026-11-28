@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 
 import av
+import numpy  # noqa: F401  (PyInstaller needs the explicit import to bundle av's dependency)
 
 from store import data_dir
 
